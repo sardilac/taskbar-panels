@@ -64,7 +64,7 @@ pub struct Surface {
     pub h: i32,
     main: Dib,
     scratch: Dib, // texto blanco sobre negro → cobertura
-    frosted: Option<Vec<u32>>, // fondo de vidrio precalculado
+    frosted: Option<(String, Vec<u32>)>, // fondo precalculado (estilo, píxeles)
 }
 
 impl Surface {
@@ -396,26 +396,39 @@ impl Surface {
 
     /// Fondo de vidrio esmerilado sobre el desenfoque de DWM: tinte muy ligero, grano fino y
     /// borde con reflejo (más brillante arriba). Se calcula una vez por tamaño y se reutiliza.
-    pub fn frosted(&mut self, sc: f32) {
-        if let Some(bg) = &self.frosted {
-            let bg = bg.clone();
-            self.px().copy_from_slice(&bg);
-            return;
+    ///
+    /// Estilos: "glass" (vidrio esmerilado), "clear" (cristal transparente), "acrylic" (acrílico de
+    /// Windows), "mica" y "dark" (oscuro sólido). El desenfoque lo aporta DWM según el estilo.
+    pub fn frosted(&mut self, sc: f32, style: &str) {
+        if let Some((st, bg)) = &self.frosted {
+            if st == style {
+                let bg = bg.clone();
+                self.px().copy_from_slice(&bg);
+                return;
+            }
         }
+        // (tinte, opacidad del tinte, luz superior, grano)
+        let (tint, ta, light, grain) = match style {
+            "clear" => (Rgb::u8(20, 24, 36), 0.10, 0.035, 0.6),
+            "acrylic" => (Rgb::u8(12, 14, 22), 0.16, 0.02, 0.0),
+            "mica" => (Rgb::u8(10, 12, 18), 0.08, 0.015, 0.0),
+            "dark" => (Rgb::u8(24, 26, 34), 0.97, 0.02, 0.0),
+            _ => (Rgb::u8(14, 16, 26), 0.30, 0.025, 1.0),
+        };
         self.px().fill(0);
         let (w, h) = (self.w as f32, self.h as f32);
-        self.fill(0.0, 0.0, w, h, Rgb::u8(14, 16, 26), 0.30); // tinte
-        self.fill(0.0, 0.0, w, h * 0.5, WHITE, 0.025); // luz suave en la mitad superior
+        self.fill(0.0, 0.0, w, h, tint, ta); // tinte
+        self.fill(0.0, 0.0, w, h * 0.5, WHITE, light); // luz suave en la mitad superior
         // grano (ruido estático determinista)
-        for y in 0..self.h {
+        for y in (0..self.h).filter(|_| grain > 0.0) {
             for x in 0..self.w {
                 let mut n = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
                 n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
                 let v = ((n >> 16) & 0xFF) as f32 / 255.0 - 0.5;
                 if v > 0.0 {
-                    self.blend(x, y, WHITE, v * 0.045);
+                    self.blend(x, y, WHITE, v * 0.045 * grain);
                 } else {
-                    self.blend(x, y, Rgb(0.0, 0.0, 0.0), -v * 0.05);
+                    self.blend(x, y, Rgb(0.0, 0.0, 0.0), -v * 0.05 * grain);
                 }
             }
         }
@@ -435,7 +448,7 @@ impl Surface {
             }
         }
         let snapshot = self.px().to_vec();
-        self.frosted = Some(snapshot);
+        self.frosted = Some((style.to_string(), snapshot));
     }
 
     /// Copia de los píxeles (BGRA premultiplicado), para pruebas
@@ -552,6 +565,39 @@ impl Surface {
                 } else if glow > 0.0 && arc_d < glow * 2.5 {
                     self.blend(px, py, col, 0.30 * (-(arc_d / glow).powi(2)).exp());
                 }
+            }
+        }
+    }
+
+    /// Segmento con extremos redondeados (grosor `width`)
+    #[allow(clippy::too_many_arguments)]
+    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, c: Rgb, a: f32) {
+        let r = width / 2.0;
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let len2 = (dx * dx + dy * dy).max(1e-6);
+        for py in (y0.min(y1) - r - 1.0).floor() as i32..(y0.max(y1) + r + 1.0).ceil() as i32 {
+            for px in (x0.min(x1) - r - 1.0).floor() as i32..(x0.max(x1) + r + 1.0).ceil() as i32 {
+                let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+                let t = (((fx - x0) * dx + (fy - y0) * dy) / len2).clamp(0.0, 1.0);
+                let d = ((fx - x0 - t * dx).powi(2) + (fy - y0 - t * dy).powi(2)).sqrt() - r;
+                self.blend(px, py, c, a * (0.5 - d).clamp(0.0, 1.0));
+            }
+        }
+    }
+
+    /// Anillo elíptico rotado (radios rx, ry; ángulo en radianes; trazo `stroke`)
+    #[allow(clippy::too_many_arguments)]
+    pub fn ellipse_ring(&mut self, cx: f32, cy: f32, rx: f32, ry: f32, angle: f32, stroke: f32, c: Rgb, a: f32) {
+        let (s, co) = angle.sin_cos();
+        let ext = rx.max(ry) + stroke + 1.0;
+        for py in (cy - ext).floor() as i32..(cy + ext).ceil() as i32 {
+            for px in (cx - ext).floor() as i32..(cx + ext).ceil() as i32 {
+                let (dx, dy) = (px as f32 + 0.5 - cx, py as f32 + 0.5 - cy);
+                let (u, v) = (dx * co + dy * s, -dx * s + dy * co);
+                // distancia aproximada a la elipse: (|p/r| - 1) · radio menor
+                let k = ((u / rx).powi(2) + (v / ry).powi(2)).sqrt();
+                let d = (k - 1.0).abs() * rx.min(ry) - stroke / 2.0;
+                self.blend(px, py, c, a * (0.5 - d).clamp(0.0, 1.0));
             }
         }
     }

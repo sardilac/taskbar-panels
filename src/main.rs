@@ -1,6 +1,6 @@
 //! taskbar-panels: paneles sobre la barra de tareas de Windows 11.
 //!   · Red/IP        (↑ subida, ↓ bajada, IP pública)
-//!   · Consumo       (Claude 5h / 7d, Copilot premium)
+//!   · Consumo de IA (Claude, Copilot, OpenAI, Anthropic, personalizados)
 //!   · Sistema       (CPU, GPU, temperaturas, FPS)
 //!   · Multimedia    (canción actual, botones, espectro neón)
 //! Una ventana por panel y por barra seleccionada (config.json). Proceso único.
@@ -8,8 +8,11 @@
 #![windows_subsystem = "windows"]
 
 mod config;
+mod ai;
 mod host;
+mod i18n;
 mod media;
+mod net;
 mod render;
 mod state;
 mod sys;
@@ -17,6 +20,7 @@ mod util;
 
 use config::Config;
 use host::Taskbar;
+use i18n::tr;
 use state::st;
 use std::cell::RefCell;
 use std::time::Instant;
@@ -57,19 +61,19 @@ impl Kind {
     }
     fn label(self) -> &'static str {
         match self {
-            Kind::Ip => "Red e IP pública",
-            Kind::Usage => "Consumo Claude / Copilot",
-            Kind::System => "Sistema (CPU, GPU, FPS)",
-            Kind::Media => "Multimedia",
+            Kind::Ip => tr("Red e IP pública", "Network and public IP"),
+            Kind::Usage => tr("Consumo de IA", "AI usage"),
+            Kind::System => tr("Sistema (CPU, GPU, FPS)", "System (CPU, GPU, FPS)"),
+            Kind::Media => tr("Multimedia", "Media"),
         }
     }
     /// ancho en px lógicos (96 dpi)
     fn width(self) -> f32 {
         match self {
             Kind::Ip => 112.0,
-            Kind::Usage => 150.0,
+            Kind::Usage => 170.0,
             Kind::System => 236.0, // métricas + anillo del disco del sistema
-            Kind::Media => 660.0,
+            Kind::Media => 560.0,
         }
     }
 }
@@ -85,6 +89,8 @@ struct Panel {
     surf: Option<Surface>,
     /// panel en una barra vertical (diseño compacto)
     vertical: bool,
+    /// modo icono (barra con muchas apps)
+    compact: bool,
     /// 0 = vinilo escondido, 1 = asomado (animado)
     vinyl: f32,
     spin: f32,
@@ -108,6 +114,13 @@ struct App {
     hover_since: Option<Instant>,
     popup_kind: Option<Kind>,
     popup_disp: Vec<f32>,
+    /// desde cuándo cada barra cumple la condición de ocultar (margen anti-parpadeo)
+    hide_since: std::collections::HashMap<isize, Instant>,
+    hidden: std::collections::HashSet<isize>,
+    /// última vez que había reproducción en curso
+    last_playing: Option<Instant>,
+    /// estilo de fondo aplicado a la ventana flotante
+    popup_style: String,
 }
 
 thread_local! {
@@ -207,7 +220,7 @@ fn paint_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32, 
         let recent = s.ip_changed_at.map(|t0| t0.elapsed().as_secs_f32() < 10.0).unwrap_or(false);
         let pulse = if recent { 0.5 + 0.5 * (t * 6.0).sin() } else { 0.0 };
         (Rgb::u8(60, 230, 120).mix(Rgb::u8(255, 220, 80), pulse), 0.45 + 0.4 * pulse)
-    } else if s.ip.starts_with("consult") {
+    } else if s.ip == tr("consultando...", "checking...") {
         (Rgb::u8(255, 200, 60), 0.4)
     } else {
         (Rgb::u8(255, 70, 90), 0.5)
@@ -216,65 +229,277 @@ fn paint_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32, 
     c.text(&s.ip, x_txt, y, w - x_txt, row, px, 400, "Segoe UI", GAINSBORO, DT_LEFT);
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum UsageShow {
-    Both,
-    Claude,
-    Copilot,
+// ======================================================================= IA: proveedores, iconos y paneles
+/// Lo que muestran los paneles de IA: proveedores habilitados y el principal ("all" = resumen)
+#[derive(Clone, Default)]
+struct AiView {
+    list: Vec<ai::Provider>,
+    primary: String,
 }
 
-fn usage_show(cfg: &Config) -> UsageShow {
-    match cfg.v["UsageShow"].as_str() {
-        Some("claude") => UsageShow::Claude,
-        Some("copilot") => UsageShow::Copilot,
-        _ => UsageShow::Both,
+impl AiView {
+    fn from_cfg(cfg: &Config) -> AiView {
+        AiView { list: ai::snapshot(cfg), primary: ai::primary(cfg) }
     }
-}
-
-const CLAUDE5: Rgb = Rgb::u8(255, 140, 90);
-const CLAUDE7: Rgb = Rgb::u8(255, 180, 120);
-const COPILOT: Rgb = Rgb::u8(150, 110, 255);
-
-/// Filas etiqueta · barra · valor; letra y barra crecen cuando hay menos filas
-fn usage_rows(c: &mut Surface, w: f32, h: f32, sc: f32, rows: &[(&str, &state::UsageRow, Rgb)]) {
-    let n = rows.len() as f32;
-    let row = h / n;
-    let px = (10.0 * sc * (3.0 / n).sqrt()).min((row * 0.62).floor());
-    let hb = (row * 0.16).clamp(3.0, 7.0 * sc);
-    let lw = rows.iter().map(|(l, _, _)| c.text_width(l, px, 400, "Segoe UI")).fold(0.0, f32::max);
-    let vw = rows.iter().map(|(_, r, _)| c.text_width(&r.text, px, 600, "Segoe UI")).fold(c.text_width("100%", px, 600, "Segoe UI"), f32::max);
-    let xb = 2.0 * sc + lw + 6.0 * sc;
-    let wb = (w - xb - vw - 8.0 * sc).max(10.0 * sc);
-    for (i, (label, r, base)) in rows.iter().enumerate() {
-        let y = i as f32 * row;
-        let col = severity(r.pct, *base);
-        c.text(label, 2.0 * sc, y, lw + 2.0, row, px, 400, "Segoe UI", GAINSBORO, DT_LEFT);
-        pill(c, xb, y + row / 2.0, wb, hb, r.pct.map(|p| p as f32 / 100.0), col);
-        c.text(&r.text, w - vw - 2.0 * sc, y, vw, row, px, 600, "Segoe UI", col, DT_RIGHT);
-    }
-}
-
-fn paint_usage(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, show: UsageShow) {
-    match show {
-        UsageShow::Both => usage_rows(c, w, h, sc, &[("Claude 5h", &s.usage[0], CLAUDE5), ("Claude 7d", &s.usage[1], CLAUDE7), ("Copilot", &s.usage[2], COPILOT)]),
-        UsageShow::Claude => usage_rows(c, w, h, sc, &[("Claude 5h", &s.usage[0], CLAUDE5), ("Claude 7d", &s.usage[1], CLAUDE7)]),
-        UsageShow::Copilot => {
-            // Una sola métrica: nombre y porcentaje grandes arriba; barra y créditos abajo
-            let r = &s.usage[2];
-            let col = severity(r.pct, COPILOT);
-            let top = (h * 0.58).floor();
-            let px = (14.0 * sc).min((top * 0.62).floor());
-            c.text("Copilot", 2.0 * sc, 0.0, w * 0.6, top, px, 400, "Segoe UI", GAINSBORO, DT_LEFT);
-            c.text(&r.text, w * 0.4, 0.0, w * 0.6 - 2.0 * sc, top, px * 1.1, 700, "Segoe UI", col, DT_RIGHT);
-            let bot = h - top;
-            let small = (8.5 * sc).min((bot * 0.62).floor());
-            let dw = c.text_width(&s.copilot_detail, small, 400, "Segoe UI");
-            let hb = (bot * 0.22).clamp(3.0, 6.0 * sc);
-            pill(c, 2.0 * sc, top + bot / 2.0, w - dw - 10.0 * sc, hb, r.pct.map(|p| p as f32 / 100.0), col);
-            c.text(&s.copilot_detail, w - dw - 2.0 * sc, top, dw + 1.0, bot, small, 400, "Segoe UI", Rgb::u8(165, 175, 195), DT_RIGHT);
+    /// Proveedores que se ven en la barra: el principal, o todos si es "all" (o no existe)
+    fn shown(&self) -> Vec<&ai::Provider> {
+        match self.list.iter().find(|p| p.id == self.primary) {
+            Some(p) if self.primary != "all" => vec![p],
+            _ => self.list.iter().take(3).collect(),
         }
     }
 }
+
+/// Color de acento de cada proveedor
+fn ai_color(p: &ai::Provider) -> Rgb {
+    match p.kind.as_str() {
+        "claude" => Rgb::u8(232, 132, 96),
+        "copilot" => Rgb::u8(160, 120, 255),
+        "openai" => Rgb::u8(40, 200, 150),
+        "anthropic_api" => Rgb::u8(222, 170, 130),
+        _ => {
+            let h = p.name.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+            neon_at((h % 1000) as f32 / 1000.0)
+        }
+    }
+}
+
+/// Icono estilizado de cada proveedor (dibujado, no son los logotipos oficiales)
+fn draw_ai_icon(c: &mut Surface, p: &ai::Provider, cx: f32, cy: f32, r: f32) {
+    use std::f32::consts::TAU;
+    match p.kind.as_str() {
+        "claude" => {
+            // estrella de rayos terracota
+            let col = Rgb::u8(217, 119, 87);
+            for i in 0..11 {
+                let a = i as f32 * TAU / 11.0 + 0.2;
+                let len = if i % 2 == 0 { 0.98 } else { 0.74 } * r;
+                c.line(cx, cy, cx + len * a.sin(), cy - len * a.cos(), (r * 0.2).max(1.6), col, 1.0);
+            }
+        }
+        "copilot" => {
+            // cara de Copilot: cabeza con "gafas" sobre fondo morado
+            c.dot(cx, cy, r, Rgb::u8(110, 64, 201), 1.0, 0.0, 0.0);
+            c.round_rect(cx - r * 0.66, cy - r * 0.44, r * 1.32, r * 0.98, r * 0.36, WHITE, 1.0);
+            for dx in [-0.27f32, 0.27] {
+                c.round_rect(cx + r * dx - r * 0.19, cy - r * 0.26, r * 0.38, r * 0.40, r * 0.14, Rgb::u8(110, 64, 201), 1.0);
+            }
+        }
+        "openai" => {
+            // nudo hexagonal blanco sobre verde
+            c.dot(cx, cy, r, Rgb::u8(16, 163, 127), 1.0, 0.0, 0.0);
+            for k in 0..3 {
+                c.ellipse_ring(cx, cy, r * 0.58, r * 0.26, k as f32 * TAU / 6.0, (r * 0.13).max(1.2), WHITE, 1.0);
+            }
+        }
+        "anthropic_api" => {
+            c.dot(cx, cy, r, Rgb::u8(240, 234, 222), 1.0, 0.0, 0.0);
+            c.text("A", cx - r, cy - r, r * 2.0, r * 2.0, r * 1.25, 900, "Segoe UI", Rgb::u8(25, 25, 25), DT_CENTER);
+        }
+        _ => {
+            // personalizado: círculo de color con iniciales
+            c.dot(cx, cy, r, ai_color(p), 1.0, 0.0, 0.0);
+            let ini: String = p.name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
+            c.text(if ini.is_empty() { "AI" } else { &ini }, cx - r, cy - r, r * 2.0, r * 2.0, r * 0.95, 700, "Segoe UI", WHITE, DT_CENTER);
+        }
+    }
+}
+
+fn metric_label(key: &str) -> String {
+    match key {
+        "session5h" => tr("Sesión 5 h", "5h session").into(),
+        "weekly" => tr("Semana", "Week").into(),
+        "premium" => tr("Premium", "Premium").into(),
+        "month" => tr("Gasto del mes", "Month spend").into(),
+        "usage" => tr("Uso", "Usage").into(),
+        other => other.to_string(),
+    }
+}
+
+fn status_text(s: &str) -> &'static str {
+    match s {
+        "no_credentials" => tr("sin credenciales", "no credentials"),
+        "expired" => tr("token expirado (abre Claude Code)", "token expired (open Claude Code)"),
+        "rate_limited" => tr("límite de consultas: datos anteriores", "rate limited: previous data"),
+        "invalid" => tr("respuesta no válida", "invalid response"),
+        "no_key" => tr("falta la clave", "missing key"),
+        "bad_key" => tr("clave no válida o sin permisos", "invalid key or no permission"),
+        "no_url" => tr("falta la URL", "missing URL"),
+        "no_data" => tr("sin datos", "no data"),
+        "" => "",
+        _ => tr("consultando…", "checking…"),
+    }
+}
+
+/// Texto del reinicio de un indicador ("reinicia en 2h05 · 23:00" / "resets on Dec 1 · in 17d")
+fn reset_text(m: &ai::Metric) -> String {
+    let Some(e) = m.reset else { return String::new() };
+    if e - util::now_epoch() < 2 * 86_400 {
+        format!("{} {}  ·  {}", tr("reinicia en", "resets in"), util::fmt_left(e), util::fmt_local(e))
+    } else if i18n::es() {
+        format!("reinicia el {}  ·  en {}", util::fmt_date(e), util::fmt_left(e))
+    } else {
+        format!("resets on {}  ·  in {}", util::fmt_date(e), util::fmt_left(e))
+    }
+}
+
+/// Panel de IA en la barra: el principal con su icono, o un resumen de todos
+fn paint_ai(c: &mut Surface, w: f32, h: f32, sc: f32, view: &AiView) {
+    let shown = view.shown();
+    if shown.is_empty() {
+        c.text(tr("Sin proveedores de IA", "No AI providers"), 2.0 * sc, 0.0, w, h, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        return;
+    }
+    let single = shown.len() == 1 && view.primary != "all";
+    if !single {
+        // resumen: una fila por proveedor (icono · barra · valor del primer indicador)
+        let n = shown.len() as f32;
+        let row = h / n;
+        let px = (10.0 * sc * (3.0 / n).sqrt()).min((row * 0.62).floor());
+        let ir = (row * 0.34).min(9.0 * sc);
+        let vw = c.text_width("100%", px, 600, "Segoe UI");
+        for (i, p) in shown.iter().enumerate() {
+            let y = i as f32 * row;
+            draw_ai_icon(c, p, 2.0 * sc + ir, y + row / 2.0, ir);
+            let col = ai_color(p);
+            let xb = 2.0 * sc + ir * 2.0 + 6.0 * sc;
+            let wb = (w - xb - vw - 8.0 * sc).max(10.0 * sc);
+            let m = p.metrics.first();
+            let pct = m.and_then(|m| m.pct);
+            pill(c, xb, y + row / 2.0, wb, (row * 0.16).clamp(3.0, 6.0 * sc), pct.map(|v| v as f32 / 100.0), severity(pct, col));
+            let val = m.map(|m| m.value.as_str()).unwrap_or("—");
+            c.text(val, w - vw - 2.0 * sc, y, vw, row, px, 600, "Segoe UI", severity(pct, col), DT_RIGHT);
+        }
+        return;
+    }
+    // principal: icono grande + nombre + hasta 2 indicadores
+    let p = shown[0];
+    let col = ai_color(p);
+    let ir = (h * 0.30).min(14.0 * sc);
+    draw_ai_icon(c, p, 2.0 * sc + ir, h / 2.0, ir);
+    let x0 = 2.0 * sc + ir * 2.0 + 7.0 * sc;
+    let bw = w - x0 - 2.0 * sc;
+    let row = h / 3.0;
+    let px = (10.0 * sc).min((row * 0.72).floor());
+    c.text(&p.name, x0, 0.0, bw, row, px, 600, "Segoe UI", WHITE, DT_LEFT | DT_END_ELLIPSIS);
+    if p.metrics.is_empty() {
+        c.text(status_text(&p.status), x0, row, bw, row * 2.0, (px * 0.85).floor(), 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+        return;
+    }
+    if p.metrics.len() >= 2 {
+        for (i, m) in p.metrics.iter().take(2).enumerate() {
+            let y = (i + 1) as f32 * row;
+            let lw = c.text_width(&metric_label(&m.label), (px * 0.85).floor(), 400, "Segoe UI").min(bw * 0.45);
+            c.text(&metric_label(&m.label), x0, y, lw + 2.0, row, (px * 0.85).floor(), 400, "Segoe UI", GAINSBORO, DT_LEFT | DT_END_ELLIPSIS);
+            let vw = c.text_width("100%", px, 600, "Segoe UI");
+            let xb = x0 + lw + 5.0 * sc;
+            pill(c, xb, y + row / 2.0, (bw - lw - vw - 9.0 * sc).max(8.0 * sc), (4.0 * sc).max(3.0), m.pct.map(|v| v as f32 / 100.0), severity(m.pct, col));
+            c.text(&m.value, x0 + bw - vw, y, vw, row, px, 600, "Segoe UI", severity(m.pct, col), DT_RIGHT);
+        }
+    } else {
+        let m = &p.metrics[0];
+        c.text(&m.value, x0, 0.0, bw, row, px, 700, "Segoe UI", severity(m.pct, col), DT_RIGHT);
+        pill(c, x0, row * 1.5, bw, (4.5 * sc).max(3.0), m.pct.map(|v| v as f32 / 100.0), severity(m.pct, col));
+        let detail = if m.detail.is_empty() { metric_label(&m.label) } else { m.detail.clone() };
+        c.text(&detail, x0, row * 2.0, bw, row, (px * 0.82).floor(), 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    }
+}
+
+/// Modo icono (barra con muchas apps): icono del proveedor principal y su valor
+fn paint_ai_compact(c: &mut Surface, w: f32, h: f32, sc: f32, view: &AiView) {
+    let Some(p) = view.shown().into_iter().next() else { return };
+    let r = (w.min(h) * 0.27).min(12.0 * sc);
+    draw_ai_icon(c, p, w / 2.0, h * 0.36, r);
+    let m = p.metrics.first();
+    let pct = m.and_then(|m| m.pct);
+    let val = m.map(|m| m.value.as_str()).unwrap_or("—");
+    c.text(val, 0.0, h * 0.62, w, h * 0.36, (8.5 * sc).min(h * 0.24), 700, "Segoe UI", severity(pct, ai_color(p)), DT_CENTER);
+}
+
+/// Modo icono del sistema: anillo con el uso de CPU y el valor debajo
+fn paint_system_compact(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
+    let r = (w.min(h) * 0.27).min(12.0 * sc);
+    let v = s.cpu.max(0.0);
+    let col = usage_color(v, CPU_COL);
+    c.donut(w / 2.0, h * 0.36, r, (r * 0.32).max(2.5), v / 100.0, col, col.mix(GPU_COL, 0.5), 2.0 * sc);
+    c.text("CPU", w / 2.0 - r, h * 0.36 - r, r * 2.0, r * 2.0, (r * 0.62).floor(), 700, "Segoe UI", DIM, DT_CENTER);
+    c.text(&format!("{v:.0}%"), 0.0, h * 0.62, w, h * 0.36, (8.5 * sc).min(h * 0.24), 700, "Segoe UI", col, DT_CENTER);
+}
+
+/// Alto (px lógicos) de la ventana flotante de IA según proveedores e indicadores
+fn ai_popup_h(view: &AiView) -> f32 {
+    let cards: f32 = view.list.iter().map(|p| 38.0 + 48.0 * p.metrics.len().max(1) as f32 + 8.0).sum();
+    40.0 + cards.max(60.0) + 6.0
+}
+
+/// Ventana flotante de IA: una tarjeta por proveedor con icono, plan, indicadores y reinicios
+fn paint_popup_ai(c: &mut Surface, w: f32, h: f32, sc: f32, view: &AiView) {
+    let _ = h;
+    let mut y = popup_frame(c, w, sc, tr("Consumo de IA", "AI usage"), tr("se actualiza cada 2–5 min", "updates every 2–5 min"));
+    let pad = 12.0 * sc;
+    let (x, cw) = (pad, w - pad * 2.0);
+    if view.list.is_empty() {
+        c.text(tr("Agrega proveedores desde el menú IA", "Add providers from the AI menu"), x, y, cw, 40.0 * sc, 10.5 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        return;
+    }
+    for p in &view.list {
+        let col = ai_color(p);
+        let ch = (38.0 + 48.0 * p.metrics.len().max(1) as f32) * sc;
+        card(c, x, y, cw, ch, sc);
+        let ir = 11.0 * sc;
+        draw_ai_icon(c, p, x + 10.0 * sc + ir, y + 18.0 * sc, ir);
+        let nx = x + 10.0 * sc + ir * 2.0 + 8.0 * sc;
+        let nw = c.text_width(&p.name, 12.0 * sc, 600, "Segoe UI");
+        c.text(&p.name, nx, y + 7.0 * sc, cw * 0.55, 22.0 * sc, 12.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT | DT_END_ELLIPSIS);
+        if !p.plan.is_empty() {
+            c.text(&format!("plan {}", p.plan), nx + nw + 8.0 * sc, y + 8.0 * sc, cw * 0.3, 22.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        }
+        let st = status_text(&p.status);
+        if !st.is_empty() {
+            c.text(st, x, y + 8.0 * sc, cw - 10.0 * sc, 22.0 * sc, 9.0 * sc, 400, "Segoe UI", Rgb::u8(255, 190, 90), DT_RIGHT | DT_END_ELLIPSIS);
+        }
+        let (ix, iw) = (x + 10.0 * sc, cw - 20.0 * sc);
+        if p.metrics.is_empty() {
+            c.text("—", ix, y + 38.0 * sc, iw, 20.0 * sc, 10.0 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        }
+        for (i, m) in p.metrics.iter().enumerate() {
+            let mut note = if m.detail.is_empty() || m.detail == m.value { String::new() } else { m.detail.clone() };
+            let rt = reset_text(m);
+            if !rt.is_empty() {
+                if !note.is_empty() {
+                    note.push_str("  ·  ");
+                }
+                note.push_str(&rt);
+            }
+            usage_line(c, ix, y + (36.0 + 48.0 * i as f32) * sc, iw, sc, &metric_label(&m.label), m.pct, &m.value, &note, col);
+        }
+        y += ch + 8.0 * sc;
+    }
+}
+
+/// Barra vertical: un bloque por proveedor mostrado
+fn paint_ai_v(c: &mut Surface, w: f32, h: f32, sc: f32, view: &AiView) {
+    let blocks: Vec<VBlock> = view
+        .shown()
+        .into_iter()
+        .map(|p| {
+            let m = p.metrics.first();
+            VBlock {
+                label: p.name.as_str(),
+                value: m.map(|m| m.value.clone()).unwrap_or("—".into()),
+                sub: String::new(),
+                sub_col: DIM,
+                col: severity(m.and_then(|m| m.pct), ai_color(p)),
+                hist: None,
+                frac: m.and_then(|m| m.pct).map(|v| v as f32 / 100.0),
+            }
+        })
+        .collect();
+    if !blocks.is_empty() {
+        paint_vblocks(c, w, h, sc, &blocks);
+    }
+}
+
 const CPU_COL: Rgb = Rgb::u8(0, 230, 255);
 const GPU_COL: Rgb = Rgb::u8(120, 255, 90);
 const FPS_COL: Rgb = Rgb::u8(255, 60, 200);
@@ -345,8 +570,8 @@ const TEMP_COL: Rgb = Rgb::u8(255, 150, 70);
 /// Leyenda mínima en la esquina superior derecha de una gráfica: "▬ uso  ▬ temp"
 fn chart_legend(c: &mut Surface, right: f32, top: f32, sc: f32, use_col: Rgb) {
     let px = 8.0 * sc;
-    let tw = c.text_width("temp", px, 400, "Segoe UI");
-    let uw = c.text_width("uso", px, 400, "Segoe UI");
+    let tw = c.text_width(tr("temp", "temp"), px, 400, "Segoe UI");
+    let uw = c.text_width(tr("uso", "use"), px, 400, "Segoe UI");
     let seg = 8.0 * sc;
     let x_t = right - tw - 2.0;
     let x_ts = x_t - seg - 3.0 * sc;
@@ -354,7 +579,7 @@ fn chart_legend(c: &mut Surface, right: f32, top: f32, sc: f32, use_col: Rgb) {
     let x_us = x_u - seg - 3.0 * sc;
     let yc = top + 5.0 * sc;
     c.capsule_h(x_us, x_us + seg, yc, 1.2 * sc, use_col, 1.0);
-    c.text("uso", x_u, top, uw + 2.0, 10.0 * sc, px, 400, "Segoe UI", DIM, DT_LEFT);
+    c.text(tr("uso", "use"), x_u, top, uw + 2.0, 10.0 * sc, px, 400, "Segoe UI", DIM, DT_LEFT);
     c.capsule_h(x_ts, x_ts + seg, yc, 1.2 * sc, TEMP_COL, 1.0);
     c.text("temp", x_t, top, tw + 2.0, 10.0 * sc, px, 400, "Segoe UI", DIM, DT_LEFT);
 }
@@ -438,7 +663,8 @@ fn paint_disk_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, s: &state:
     card(c, x, y, cw, ch, sc);
     let total_free: f64 = s.drives.iter().map(|d| d.free).sum();
     let n = s.drives.len();
-    card_head(c, x, y, cw, sc, "DISCOS", &format!("{n} unidad{} · {} libres", if n == 1 { "" } else { "es" }, fmt_size(total_free)), "", "", DISK_C1);
+    let summary = if i18n::es() { format!("{n} unidad{} · {} libres", if n == 1 { "" } else { "es" }, fmt_size(total_free)) } else { format!("{n} drive{} · {} free", if n == 1 { "" } else { "s" }, fmt_size(total_free)) };
+    card_head(c, x, y, cw, sc, tr("DISCOS", "DRIVES"), &summary, "", "", DISK_C1);
     let col_w = (cw - 20.0 * sc) / 2.0;
     for (i, d) in s.drives.iter().enumerate() {
         let (cx0, cy0) = (x + 10.0 * sc + (i % 2) as f32 * col_w, y + 34.0 * sc + (i / 2) as f32 * 54.0 * sc);
@@ -451,13 +677,13 @@ fn paint_disk_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, s: &state:
         let tw = col_w - r * 2.0 - 12.0 * sc;
         let name = if d.label.is_empty() { format!("{}:", d.letter) } else { format!("{}:  {}", d.letter, d.label) };
         c.text(&name, tx, cy0 + 2.0 * sc, tw, 15.0 * sc, 10.5 * sc, 600, "Segoe UI", Rgb::u8(225, 230, 240), DT_LEFT | DT_END_ELLIPSIS);
-        c.text(&format!("{} libres", fmt_size(d.free)), tx, cy0 + 17.0 * sc, tw, 14.0 * sc, 9.5 * sc, 600, "Segoe UI", c1.mix(WHITE, 0.3), DT_LEFT | DT_END_ELLIPSIS);
-        c.text(&format!("de {}", fmt_size(d.total)), tx, cy0 + 30.0 * sc, tw, 14.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+        c.text(&format!("{} {}", fmt_size(d.free), tr("libres", "free")), tx, cy0 + 17.0 * sc, tw, 14.0 * sc, 9.5 * sc, 600, "Segoe UI", c1.mix(WHITE, 0.3), DT_LEFT | DT_END_ELLIPSIS);
+        c.text(&format!("{} {}", tr("de", "of"), fmt_size(d.total)), tx, cy0 + 30.0 * sc, tw, 14.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
     }
     // lectura / escritura
     let ry = y + 34.0 * sc + n.max(1).div_ceil(2) as f32 * 54.0 * sc;
     let maxv = s.hist_disk_r.iter().chain(s.hist_disk_w.iter()).fold(1e6f32, |m, v| m.max(*v)) * 1.15;
-    for (i, (label, v, hist, col)) in [("LECTURA", s.disk_read, &s.hist_disk_r, DOWN_COL), ("ESCRITURA", s.disk_write, &s.hist_disk_w, UP_COL)].into_iter().enumerate() {
+    for (i, (label, v, hist, col)) in [(tr("LECTURA", "READ"), s.disk_read, &s.hist_disk_r, DOWN_COL), (tr("ESCRITURA", "WRITE"), s.disk_write, &s.hist_disk_w, UP_COL)].into_iter().enumerate() {
         let cx0 = x + 10.0 * sc + i as f32 * col_w;
         let bw = badge(c, cx0, ry + 8.0 * sc, label, 8.0 * sc, col, sc, 0.0);
         c.text(&format!("{}/s", fmt_bytes(v)), cx0 + bw + 6.0 * sc, ry, col_w - bw - 12.0 * sc, 16.0 * sc, 10.5 * sc, 600, "Segoe UI", col.mix(WHITE, 0.35), DT_LEFT);
@@ -466,18 +692,27 @@ fn paint_disk_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, s: &state:
     ch
 }
 
+/// alto (px lógicos, bits de f32) de la ventana flotante de IA, actualizado al dibujar los paneles
+static AI_POPUP_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn popup_h(kind: Kind) -> f32 {
     match kind {
         Kind::System => 352.0 + 8.0 + disk_card_h(st().drives.len()),
-        Kind::Ip => 324.0,
-        Kind::Usage => 268.0,
+        Kind::Ip => 324.0 + ROUTER_CARD_H + 8.0,
+        Kind::Usage => f32::from_bits(AI_POPUP_H.load(std::sync::atomic::Ordering::Relaxed)).max(120.0),
         Kind::Media => 244.0,
     }
 }
 
-/// Fondo (tinte sobre el acrílico) + título y texto secundario a la derecha; devuelve la y de inicio
+thread_local! {
+    /// estilo de fondo con el que se dibujan las ventanas flotantes
+    static POPUP_STYLE: RefCell<String> = RefCell::new("glass".into());
+}
+
+/// Fondo según el estilo + título y texto secundario a la derecha; devuelve la y de inicio
 fn popup_frame(c: &mut Surface, w: f32, sc: f32, title: &str, right: &str) -> f32 {
-    c.frosted(sc);
+    let style = POPUP_STYLE.with(|s| s.borrow().clone());
+    c.frosted(sc, &style);
     let pad = 12.0 * sc;
     c.text(title, pad + 2.0 * sc, pad, w - pad * 2.0, 20.0 * sc, 13.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
     c.text(right, pad, pad, w - pad * 2.0 - 2.0 * sc, 20.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
@@ -492,20 +727,6 @@ fn fmt_bytes(b: f64) -> String {
     } else {
         format!("{:.0} KB", b / 1e3)
     }
-}
-
-/// 1000000 → "1.000.000"
-fn miles(v: f64) -> String {
-    let s = format!("{:.0}", v.max(0.0));
-    let b = s.as_bytes();
-    let mut out = String::new();
-    for (i, ch) in b.iter().enumerate() {
-        if i > 0 && (b.len() - i) % 3 == 0 {
-            out.push('.');
-        }
-        out.push(*ch as char);
-    }
-    out
 }
 
 fn mmss(secs: f64) -> String {
@@ -529,9 +750,123 @@ fn wrap2(c: &Surface, text: &str, px: f32, weight: i32, width: f32) -> (String, 
     (first, words[i..].join(" "))
 }
 
+// ----------------------------------------------------------------------- router (ventana de red)
+const ROUTER_CARD_H: f32 = 118.0;
+
+/// Router dibujado: antenas, ondas Wi-Fi, cuerpo redondeado con reflejo y LED con halo
+#[allow(clippy::too_many_arguments)]
+fn draw_router(c: &mut Surface, x: f32, y: f32, w: f32, h: f32, sc: f32, t: f32, online: bool, reply_flash: f32, wifi: bool) {
+    let body_y = y + h * 0.46;
+    let body_h = h * 0.40;
+    let led_ok = Rgb::u8(60, 230, 140);
+    let led_bad = Rgb::u8(255, 80, 100);
+    let accent = Rgb::u8(110, 170, 255);
+    // antenas
+    for ax in [x + w * 0.22, x + w * 0.78] {
+        c.capsule(ax, y + h * 0.10, body_y + 2.0 * sc, 2.2 * sc, Rgb::u8(120, 128, 155), 1.0, 0.0, 0.0, 0.35);
+        c.dot(ax, y + h * 0.10, 2.8 * sc, Rgb::u8(150, 158, 185), 1.0, 0.0, 0.0);
+    }
+    // ondas Wi-Fi (arcos) animadas sobre el centro
+    if wifi && online {
+        let (cx, cy) = (x + w / 2.0, y + h * 0.38);
+        for (i, r) in [7.0f32, 12.0, 17.0].iter().enumerate() {
+            let phase = ((t * 1.6 - i as f32 * 0.35).sin() * 0.5 + 0.5) * 0.6 + 0.25;
+            let rr = r * sc;
+            // arco superior (de -50° a +50°) dibujado por puntos
+            let steps = (rr * 2.2) as i32;
+            for k in 0..=steps {
+                let a = -0.9 + 1.8 * k as f32 / steps as f32;
+                c.dot(cx + rr * a.sin(), cy - rr * a.cos(), 1.1 * sc, accent, phase, 0.0, 0.0);
+            }
+        }
+    }
+    // cuerpo
+    c.round_rect(x, body_y, w, body_h, 7.0 * sc, Rgb::u8(46, 50, 70), 1.0);
+    c.round_rect(x, body_y, w, body_h * 0.5, 7.0 * sc, WHITE, 0.07); // reflejo superior
+    c.fill(x + 8.0 * sc, body_y + body_h * 0.62, w - 16.0 * sc, 1.0 * sc.max(1.0), WHITE, 0.08); // línea frontal
+    // LED: encendido, Wi-Fi, ping (destella con cada respuesta), internet
+    let leds = [
+        (led_ok, 1.0),
+        (if wifi { accent } else { Rgb::u8(90, 96, 120) }, if wifi { 0.75 + 0.25 * (t * 3.0).sin() } else { 0.4 }),
+        (Rgb::u8(255, 210, 90), 0.25 + 0.75 * reply_flash),
+        (if online { led_ok } else { led_bad }, 1.0),
+    ];
+    let ly = body_y + body_h * 0.36;
+    for (i, (col, a)) in leds.iter().enumerate() {
+        let lx = x + w * (0.24 + 0.17 * i as f32);
+        c.dot(lx, ly, 2.0 * sc, *col, *a, 3.0 * sc, 0.45 * a);
+    }
+}
+
+fn ping_color(ms: Option<u32>) -> Rgb {
+    match ms {
+        None => Rgb::u8(255, 80, 100),
+        Some(v) if v < 10 => Rgb::u8(60, 230, 140),
+        Some(v) if v < 50 => Rgb::u8(255, 210, 90),
+        _ => Rgb::u8(255, 140, 70),
+    }
+}
+
+/// Tarjeta del router: imagen, puerta de enlace, DNS, adaptador y ping con gráfica
+fn paint_router_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, t: f32) -> f32 {
+    let ch = ROUTER_CARD_H * sc;
+    card(c, x, y, cw, ch, sc);
+    let info = net::INFO.lock().unwrap().clone();
+    let p = net::PING.lock().unwrap().clone();
+    let flash = p.reply_at.map(|r| (1.0 - r.elapsed().as_secs_f32() / 0.35).clamp(0.0, 1.0)).unwrap_or(0.0);
+    let online = p.last.is_some() || p.sent == 0;
+    let wifi = info.as_ref().map(|i| i.wifi).unwrap_or(false);
+    let (rw, rh) = (84.0 * sc, 74.0 * sc);
+    draw_router(c, x + 12.0 * sc, y + (ch - rh) / 2.0, rw, rh, sc, t, online, flash, wifi);
+    let tx = x + 12.0 * sc + rw + 14.0 * sc;
+    let tw = x + cw - 10.0 * sc - tx;
+    let Some(i) = info else {
+        c.text(tr("Leyendo la red local…", "Reading local network…"), tx, y, tw, ch, 10.5 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        return ch;
+    };
+    // puerta de enlace
+    let bw = badge(c, tx, y + 18.0 * sc, tr("PUERTA DE ENLACE", "GATEWAY"), 8.0 * sc, Rgb::u8(170, 200, 255), sc, 0.0);
+    let _ = bw;
+    c.text(&i.gateway, tx, y + 26.0 * sc, tw, 22.0 * sc, 15.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
+    // ping a la derecha de la puerta de enlace
+    let pc = ping_color(p.last);
+    let pv = match (p.sent, p.last) {
+        (0, _) => "…".to_string(),
+        (_, Some(ms)) => if ms == 0 { "<1 ms".into() } else { format!("{ms} ms") },
+        (_, None) => tr("sin respuesta", "no reply").into(),
+    };
+    c.text(&pv, tx, y + 26.0 * sc, tw, 22.0 * sc, 13.0 * sc, 700, "Segoe UI", pc, DT_RIGHT);
+    // DNS y adaptador
+    let dns = if i.dns.is_empty() { "—".to_string() } else { i.dns.iter().take(3).cloned().collect::<Vec<_>>().join("  ·  ") };
+    c.text(&format!("DNS  {dns}"), tx, y + 50.0 * sc, tw, 15.0 * sc, 9.5 * sc, 400, "Segoe UI", Rgb::u8(205, 212, 228), DT_LEFT | DT_END_ELLIPSIS);
+    let speed = if i.link_bps >= 1_000_000_000 { format!("{:.1} Gb/s", i.link_bps as f64 / 1e9) } else { format!("{} Mb/s", i.link_bps / 1_000_000) };
+    let kind = if i.wifi { "Wi-Fi" } else { "Ethernet" };
+    let name = if i.adapter.eq_ignore_ascii_case(kind) { format!("{kind} {speed}") } else { format!("{}  ·  {kind} {speed}", i.adapter) };
+    c.text(&format!("{name}  ·  {} {}", tr("IP local", "local IP"), i.local_ip), tx, y + 65.0 * sc, tw, 15.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    // gráfica del ping + estadísticas
+    let gy = y + 84.0 * sc;
+    let ok = p.sent - p.lost;
+    let stats = if ok > 0 {
+        let loss = p.lost as f32 * 100.0 / p.sent.max(1) as f32;
+        if i18n::es() {
+            format!("mín {} · media {} · máx {} ms · pérdida {loss:.0}%", p.min, p.sum / ok as u64, p.max)
+        } else {
+            format!("min {} · avg {} · max {} ms · loss {loss:.0}%", p.min, p.sum / ok as u64, p.max)
+        }
+    } else if p.sent > 0 {
+        if i18n::es() { format!("pérdida 100% ({} enviados)", p.sent) } else { format!("loss 100% ({} sent)", p.sent) }
+    } else {
+        tr("midiendo…", "measuring…").into()
+    };
+    c.text(&stats, tx, gy + 12.0 * sc, tw, 14.0 * sc, 8.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
+    let pmax = p.hist.iter().fold(10.0f32, |m, v| m.max(*v)) * 1.2;
+    c.sparkline(tx, gy - 2.0 * sc, tw, 16.0 * sc, &p.hist, pmax, pc, 0.9);
+    ch
+}
+
 // ----------------------------------------------------------------------- Red
-fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
-    let mut y = popup_frame(c, w, sc, "Red", &format!("sesión: ↓ {}  ↑ {}", fmt_bytes(s.sess_down), fmt_bytes(s.sess_up)));
+fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32) {
+    let mut y = popup_frame(c, w, sc, tr("Red", "Network"), &format!("{}: ↓ {}  ↑ {}", tr("sesión", "session"), fmt_bytes(s.sess_down), fmt_bytes(s.sess_up)));
     let pad = 12.0 * sc;
     let (x, cw) = (pad, w - pad * 2.0);
     // IP pública
@@ -539,23 +874,25 @@ fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
     card(c, x, y, cw, ih, sc);
     let online = s.ip.contains('.') || s.ip.contains(':');
     let dot = if online { Rgb::u8(60, 230, 120) } else { Rgb::u8(255, 70, 90) };
-    let bw = badge(c, x + 10.0 * sc, y + 17.0 * sc, "IP PÚBLICA", 9.0 * sc, Rgb::u8(170, 200, 255), sc, 0.0);
+    let bw = badge(c, x + 10.0 * sc, y + 17.0 * sc, tr("IP PÚBLICA", "PUBLIC IP"), 9.0 * sc, Rgb::u8(170, 200, 255), sc, 0.0);
     c.dot(x + 10.0 * sc + bw + 12.0 * sc, y + 17.0 * sc, 3.0 * sc, dot, 1.0, 3.0 * sc, 0.5);
     c.text(&s.ip, x + 10.0 * sc + bw + 20.0 * sc, y + 4.0 * sc, cw - bw - 30.0 * sc, 26.0 * sc, 16.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
     let isp = [s.isp.as_str(), s.city.as_str()].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join("   ·   ");
-    c.text(if isp.is_empty() { "ISP desconocido" } else { &isp }, x + 10.0 * sc, y + 34.0 * sc, cw - 20.0 * sc, 22.0 * sc, 10.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    c.text(if isp.is_empty() { tr("ISP desconocido", "Unknown ISP") } else { &isp }, x + 10.0 * sc, y + 34.0 * sc, cw - 20.0 * sc, 22.0 * sc, 10.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
     y += ih + 8.0 * sc;
+    // Router: puerta de enlace, DNS y ping (solo mientras esta ventana está abierta)
+    y += paint_router_card(c, x, y, cw, sc, t) + 8.0 * sc;
     // Descarga / subida
     let maxv = s.hist_down.iter().chain(s.hist_up.iter()).fold(8_000.0f32, |m, v| m.max(*v)) * 1.15;
     let ch = (h - y - pad - 8.0 * sc) / 2.0;
-    let items = [("BAJADA", s.down_bps, &s.hist_down, DOWN_COL, s.sess_down), ("SUBIDA", s.up_bps, &s.hist_up, UP_COL, s.sess_up)];
+    let items = [(tr("BAJADA", "DOWNLOAD"), s.down_bps, &s.hist_down, DOWN_COL, s.sess_down), (tr("SUBIDA", "UPLOAD"), s.up_bps, &s.hist_up, UP_COL, s.sess_up)];
     for (label, bps, hist, col, total) in items {
         card(c, x, y, cw, ch, sc);
         let (num, unit) = rate_parts(bps);
         let max = hist.iter().fold(0f32, |m, v| m.max(*v)) as f64;
         let (mn, mu) = rate_parts(max);
-        card_head(c, x, y, cw, sc, label, &format!("máx. 60 s: {mn} {mu}"), &num, unit, col);
-        c.text(&format!("total de la sesión: {}", fmt_bytes(total)), x + 10.0 * sc, y + 30.0 * sc, cw - 20.0 * sc, 14.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        card_head(c, x, y, cw, sc, label, &format!("{} {mn} {mu}", tr("máx. 60 s:", "60 s max:")), &num, unit, col);
+        c.text(&format!("{} {}", tr("total de la sesión:", "session total:"), fmt_bytes(total)), x + 10.0 * sc, y + 30.0 * sc, cw - 20.0 * sc, 14.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_LEFT);
         c.sparkline(x + 10.0 * sc, y + 48.0 * sc, cw - 20.0 * sc, (ch - 54.0 * sc).max(4.0), hist, maxv, col, 1.0);
         y += ch + 8.0 * sc;
     }
@@ -574,43 +911,12 @@ fn usage_line(c: &mut Surface, x: f32, y: f32, w: f32, sc: f32, label: &str, pct
     c.text(note, x, y + 27.0 * sc, w, 14.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
 }
 
-fn paint_popup_usage(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
-    let mut y = popup_frame(c, w, sc, "Consumo de IA", "se actualiza cada 3–5 min");
-    let pad = 12.0 * sc;
-    let (x, cw) = (pad, w - pad * 2.0);
-    let ix = x + 10.0 * sc;
-    let iw = cw - 20.0 * sc;
-    let reset = |r: Option<i64>| r.map(|e| format!("reinicia en {}  ·  {}", util::fmt_left(e), util::fmt_local(e))).unwrap_or_else(|| "—".into());
-    // Claude
-    let ch = 128.0 * sc;
-    card(c, x, y, cw, ch, sc);
-    let plan = if s.claude_plan.is_empty() { "—".to_string() } else { format!("plan {}", s.claude_plan) };
-    card_head(c, x, y, cw, sc, "CLAUDE", &plan, "", "", CLAUDE5);
-    usage_line(c, ix, y + 34.0 * sc, iw, sc, "Sesión de 5 horas", s.usage[0].pct, &s.usage[0].text, &reset(s.claude_reset5), CLAUDE5);
-    usage_line(c, ix, y + 80.0 * sc, iw, sc, "Límite semanal", s.usage[1].pct, &s.usage[1].text, &reset(s.claude_reset7), CLAUDE7);
-    y += ch + 8.0 * sc;
-    // Copilot
-    let kh = h - y - pad;
-    card(c, x, y, cw, kh, sc);
-    let plan = if s.copilot_plan.is_empty() { "—".to_string() } else { format!("plan {}", s.copilot_plan) };
-    card_head(c, x, y, cw, sc, "COPILOT", &plan, "", "", COPILOT);
-    let label = if s.copilot_unlimited {
-        "Solicitudes premium: ilimitadas".to_string()
-    } else if s.copilot_total <= 0.0 {
-        "Solicitudes premium: —".to_string()
-    } else {
-        format!("Solicitudes premium: {} de {}", miles(s.copilot_used), miles(s.copilot_total))
-    };
-    let note = s.copilot_reset.map(|e| format!("reinicia el {}  ·  en {}", util::fmt_date(e), util::fmt_left(e))).unwrap_or_else(|| "—".into());
-    usage_line(c, ix, y + 34.0 * sc, iw, sc, &label, s.usage[2].pct, &s.usage[2].text, &note, COPILOT);
-}
-
 // ----------------------------------------------------------------------- Multimedia
-fn paint_popup_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, disp: &mut Vec<f32>, t: f32) {
+fn paint_popup_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, disp: &mut Vec<f32>, t: f32, bars_style: bool) {
     let art = media::ART.lock().unwrap().clone();
     let accent = art.as_ref().map(|a| Rgb::u8(a.accent.0, a.accent.1, a.accent.2)).unwrap_or(Rgb::u8(0, 230, 255));
     let app = if s.media_app.is_empty() { "—".to_string() } else { s.media_app.clone() };
-    let y0 = popup_frame(c, w, sc, "Reproduciendo", &app);
+    let y0 = popup_frame(c, w, sc, if s.playing { tr("Reproduciendo", "Now playing") } else { tr("En pausa", "Paused") }, &app);
     let pad = 12.0 * sc;
     // carátula grande (o vinilo)
     let a_sz = 112.0 * sc;
@@ -629,7 +935,7 @@ fn paint_popup_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State,
     c.text(&l2, tx, ay + 19.0 * sc, tw, 20.0 * sc, tpx, 600, "Segoe UI", WHITE, DT_LEFT | DT_END_ELLIPSIS);
     c.text(&s.artist, tx, ay + 44.0 * sc, tw, 18.0 * sc, 11.0 * sc, 400, "Segoe UI", Rgb::u8(205, 210, 225), DT_LEFT | DT_END_ELLIPSIS);
     c.text(&s.media_album, tx, ay + 62.0 * sc, tw, 16.0 * sc, 10.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
-    let state_txt = if s.playing { "▶  reproduciendo" } else { "❚❚  en pausa" };
+    let state_txt = if s.playing { tr("▶  reproduciendo", "▶  playing") } else { tr("❚❚  en pausa", "❚❚  paused") };
     badge(c, tx, ay + a_sz - 10.0 * sc, state_txt, 8.5 * sc, accent, sc, 0.0);
     // progreso con tiempos
     let py = ay + a_sz + 14.0 * sc;
@@ -656,11 +962,16 @@ fn paint_popup_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State,
     let pulse = (disp.iter().take(6).sum::<f32>() / 6.0).clamp(0.0, 1.0);
     let vy = py + 22.0 * sc;
     let d = disp.clone();
-    spectrum_wave(c, x0, vy, x1 - x0, (h - vy - pad).max(8.0), sc, &d, &d, (t / 14.0).rem_euclid(1.0), pulse);
+    let (vh, ph) = ((h - vy - pad).max(8.0), (t / 14.0).rem_euclid(1.0));
+    if bars_style {
+        spectrum_bars(c, x0, vy, x1 - x0, vh, sc, &d, &d, ph, pulse);
+    } else {
+        spectrum_wave(c, x0, vy, x1 - x0, vh, sc, &d, &d, ph, pulse);
+    }
 }
 
 fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
-    let mut y = popup_frame(c, w, sc, "Sistema", &format!("RAM {:.1}/{:.0} GB", s.ram_used, s.ram_total));
+    let mut y = popup_frame(c, w, sc, tr("Sistema", "System"), &format!("RAM {:.1}/{:.0} GB", s.ram_used, s.ram_total));
     let pad = 12.0 * sc;
     let cw = w - pad * 2.0;
     let x = pad;
@@ -673,7 +984,7 @@ fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State
     card(c, x, y, cw, ch, sc);
     card_head(c, x, y, cw, sc, "CPU", &s.cpu_name, &format!("{:.0}", s.cpu.max(0.0)), "%", CPU_COL);
     let ghz = if s.cpu_mhz > 0.0 { format!("≈{:.2} GHz", s.cpu_mhz / 1000.0) } else { "— GHz".into() };
-    let det = format!("{ghz}   ·   {}   ·   ventilador {}", temp(s.cpu_t), fan(s.fan_c));
+    let det = format!("{ghz}   ·   {}   ·   {} {}", temp(s.cpu_t), tr("ventilador", "fan"), fan(s.fan_c));
     c.text(&det, x + 10.0 * sc, y + 30.0 * sc, cw - 20.0 * sc, 14.0 * sc, small, 400, "Segoe UI", temp_color(s.cpu_t).mix(DIM, 0.55), DT_LEFT | DT_END_ELLIPSIS);
     let (gx, gy, gw, gh) = (x + 10.0 * sc, y + 48.0 * sc, cw - 20.0 * sc, ch - 54.0 * sc);
     c.sparkline(gx, gy, gw, gh, &s.hist_cpu, 100.0, CPU_COL, 1.0);
@@ -701,7 +1012,7 @@ fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State
     let rh = 46.0 * sc;
     card(c, x, y, cw, rh, sc);
     let frac = if s.ram_total > 0.0 { s.ram_used / s.ram_total } else { 0.0 };
-    card_head(c, x, y, cw, sc, "RAM", &format!("{:.1} de {:.1} GB", s.ram_used, s.ram_total), &format!("{:.0}", frac * 100.0), "%", RAM_COL);
+    card_head(c, x, y, cw, sc, "RAM", &format!("{:.1} {} {:.1} GB", s.ram_used, tr("de", "of"), s.ram_total), &format!("{:.0}", frac * 100.0), "%", RAM_COL);
     let by = y + 36.0 * sc;
     c.capsule_h(x + 10.0 * sc, x + cw - 10.0 * sc, by, 2.5 * sc, WHITE, 0.12);
     c.capsule_h(x + 10.0 * sc, x + 10.0 * sc + ((cw - 20.0 * sc) * frac).max(5.0 * sc), by, 2.5 * sc, RAM_COL, 1.0);
@@ -713,9 +1024,9 @@ fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State
     // ---- FPS
     let fh = h - y - pad;
     card(c, x, y, cw, fh, sc);
-    let app = if s.app.is_empty() { "sin juego en primer plano".to_string() } else { s.app.trim_end_matches(".exe").to_string() };
+    let app = if s.app.is_empty() { tr("sin juego en primer plano", "no game in the foreground").to_string() } else { s.app.trim_end_matches(".exe").to_string() };
     card_head(c, x, y, cw, sc, "FPS", &app, &if s.fps > 0 { s.fps.to_string() } else { "—".into() }, "fps", FPS_COL);
-    let ft = if s.fps > 0 { format!("tiempo por frame {:.1} ms", 1000.0 / s.fps as f32) } else { "PresentMon mide la ventana en primer plano".into() };
+    let ft = if s.fps > 0 { format!("{} {:.1} ms", tr("tiempo por frame", "frame time"), 1000.0 / s.fps as f32) } else { tr("PresentMon mide la ventana en primer plano", "PresentMon measures the foreground window").into() };
     c.text(&ft, x + 10.0 * sc, y + 30.0 * sc, cw - 20.0 * sc, 14.0 * sc, small, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
     let fmax = s.hist_fps.iter().fold(60.0f32, |m, v| m.max(*v)) * 1.15;
     c.sparkline(x + 10.0 * sc, y + 48.0 * sc, cw - 20.0 * sc, (fh - 54.0 * sc).max(4.0), &s.hist_fps, fmax, FPS_COL, 1.0);
@@ -723,7 +1034,7 @@ fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State
 
 /// Desenfoque "vidrio esmerilado" detrás de la ventana: ACCENT_ENABLE_ACRYLICBLURBEHIND con un tinte
 /// casi transparente (SetWindowCompositionAttribute, no documentada pero estable desde Windows 10)
-unsafe fn set_glass_blur(h: HWND) {
+unsafe fn set_accent(h: HWND, state: i32, gradient: u32) {
     #[repr(C)]
     struct AccentPolicy {
         state: i32,
@@ -741,9 +1052,38 @@ unsafe fn set_glass_blur(h: HWND) {
     let Ok(user32) = GetModuleHandleW(w!("user32.dll")) else { return };
     let Some(f) = windows::Win32::System::LibraryLoader::GetProcAddress(user32, windows::core::s!("SetWindowCompositionAttribute")) else { return };
     let f: SetWca = std::mem::transmute(f);
-    let mut ap = AccentPolicy { state: 4, flags: 0, gradient: 0x1A18_1210, anim: 0 }; // tinte azulado al ~10 %
+    let mut ap = AccentPolicy { state, flags: 0, gradient, anim: 0 };
     let mut d = CompAttrData { attrib: 19, data: &mut ap as *mut _ as *mut _, size: std::mem::size_of::<AccentPolicy>() }; // WCA_ACCENT_POLICY
     let _ = f(h, &mut d);
+}
+
+const POPUP_STYLES: [(&str, &str); 5] = [
+    ("glass", "Vidrio esmerilado|Frosted glass"),
+    ("clear", "Cristal transparente|Clear glass"),
+    ("acrylic", "Acrílico de Windows|Windows acrylic"),
+    ("mica", "Mica|Mica"),
+    ("dark", "Oscuro|Dark"),
+];
+
+fn popup_style(cfg: &Config) -> String {
+    let s = cfg.v["PopupStyle"].as_str().unwrap_or("glass");
+    if POPUP_STYLES.iter().any(|(k, _)| *k == s) { s.to_string() } else { "glass".into() }
+}
+
+/// Aplica el fondo de DWM según el estilo: desenfoque con tinte (acento), desenfoque sin tinte,
+/// acrílico o mica del sistema, u opaco
+unsafe fn apply_popup_style(h: HWND, style: &str) {
+    use windows::Win32::Graphics::Dwm::*;
+    // (estado del acento, tinte AABBGGRR, fondo del sistema DWMSBT)
+    let (accent, gradient, backdrop): (i32, u32, i32) = match style {
+        "clear" => (3, 0, 1),           // ACCENT_ENABLE_BLURBEHIND, DWMSBT_NONE
+        "acrylic" => (0, 0, 3),         // DWMSBT_TRANSIENTWINDOW
+        "mica" => (0, 0, 2),            // DWMSBT_MAINWINDOW
+        "dark" => (0, 0, 1),            // sin desenfoque
+        _ => (4, 0x1A18_1210, 1),       // ACCENT_ENABLE_ACRYLICBLURBEHIND, tinte azulado ~10 %
+    };
+    set_accent(h, accent, gradient);
+    let _ = DwmSetWindowAttribute(h, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop as *const _ as *const _, 4);
 }
 
 /// Crea (una vez) la ventana flotante con desenfoque, esquinas redondeadas y modo oscuro
@@ -768,11 +1108,8 @@ unsafe fn ensure_popup(app: &mut App) -> HWND {
     };
     let one: i32 = 1;
     let round: i32 = 2; // DWMWCP_ROUND
-    let none: i32 = 1; // DWMSBT_NONE: el desenfoque lo pone la política de acento
     let _ = DwmSetWindowAttribute(h, DWMWA_USE_IMMERSIVE_DARK_MODE, &one as *const _ as *const _, 4);
     let _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as *const _, 4);
-    let _ = DwmSetWindowAttribute(h, DWMWA_SYSTEMBACKDROP_TYPE, &none as *const _ as *const _, 4);
-    set_glass_blur(h);
     let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
     let _ = DwmExtendFrameIntoClientArea(h, &m);
     app.popup = h;
@@ -791,13 +1128,14 @@ unsafe fn paint_popup_window(hwnd: HWND) {
         }
         let sc = app.popup_scale;
         let tt = app.t0.elapsed().as_secs_f32();
+        let bars = app.cfg.v["SpectrumStyle"].as_str() == Some("bars");
         let (wf, hf) = (rc.right as f32, rc.bottom as f32);
         if let (Some(surf), Some(kind)) = (app.popup_surf.as_mut(), app.popup_kind) {
             match kind {
                 Kind::System => paint_popup_system(surf, wf, hf, sc, &s),
-                Kind::Ip => paint_popup_ip(surf, wf, hf, sc, &s),
-                Kind::Usage => paint_popup_usage(surf, wf, hf, sc, &s),
-                Kind::Media => paint_popup_media(surf, wf, hf, sc, &s, &mut app.popup_disp, tt),
+                Kind::Ip => paint_popup_ip(surf, wf, hf, sc, &s, tt),
+                Kind::Usage => paint_popup_ai(surf, wf, hf, sc, &AiView::from_cfg(&app.cfg)),
+                Kind::Media => paint_popup_media(surf, wf, hf, sc, &s, &mut app.popup_disp, tt, bars),
             }
             surf.blit(hdc);
         }
@@ -849,6 +1187,12 @@ unsafe fn update_popup() {
                     if h.is_invalid() {
                         return;
                     }
+                    let style = popup_style(&app.cfg);
+                    if style != app.popup_style {
+                        apply_popup_style(h, &style);
+                        POPUP_STYLE.with(|s| *s.borrow_mut() = style.clone());
+                        app.popup_style = style;
+                    }
                     app.popup_scale = sc;
                     app.popup_kind = Some(kind);
                     let (pw, ph) = ((POPUP_W * sc) as i32, (popup_h(kind) * sc) as i32);
@@ -881,8 +1225,10 @@ unsafe fn update_popup() {
                 }
             }
         }
-        // multimedia: animación a 60 fps (espectro, progreso)
-        if app.popup_shown && app.popup_kind == Some(Kind::Media) {
+        net::set_active(app.popup_shown && app.popup_kind == Some(Kind::Ip));
+        // multimedia: animación a 60 fps (espectro, progreso); red: ~15 fps (LED y ondas del router)
+        let frame = (app.t0.elapsed().as_millis() / 16) as u64;
+        if app.popup_shown && (app.popup_kind == Some(Kind::Media) || (app.popup_kind == Some(Kind::Ip) && frame % 4 == 0)) {
             let _ = InvalidateRect(app.popup, None, FALSE);
         }
     });
@@ -906,14 +1252,16 @@ fn neon_at(t: f32) -> Rgb {
 /// None si el espacio libre es demasiado estrecho.
 fn media_place(tb: &Taskbar, right_limit: i32) -> Option<(i32, i32)> {
     let sc = tb.scale;
+    // margen de 16 px lógicos con los iconos para que nunca se monte sobre ellos
     let (x, avail) = if tb.left_aligned {
-        let x = tb.tasks_right + (12.0 * sc) as i32;
+        let x = tb.tasks_right + (16.0 * sc) as i32;
         (x, (right_limit - x) as f32 - 12.0 * sc)
     } else {
-        (tb.left + (12.0 * sc) as i32, (tb.start_left - tb.left) as f32 - 24.0 * sc)
+        let x = tb.left + (12.0 * sc) as i32;
+        (x, (tb.start_left - x) as f32 - 16.0 * sc)
     };
-    if avail < 240.0 * sc {
-        return None;
+    if avail < 320.0 * sc {
+        return None; // sin espacio suficiente: mejor ocultarlo que taparlos
     }
     Some((x, (Kind::Media.width() * sc).min(avail) as i32))
 }
@@ -1026,7 +1374,7 @@ fn media_layout(w: f32, h: f32, sc: f32) -> MediaLayout {
     let play = prev + sr + 6.0 * sc + pr;
     let next = play + pr + 6.0 * sc + sr;
     let text_x = next + sr + 12.0 * sc;
-    let viz_w = (210.0 * sc).min(w * 0.28);
+    let viz_w = (190.0 * sc).min(w * 0.26);
     let text_w = (w - text_x - viz_w - 14.0 * sc).max(40.0 * sc);
     MediaLayout {
         art_x,
@@ -1159,10 +1507,10 @@ fn paint_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, p: &m
 
 // ======================================================================= barras verticales (izquierda/derecha)
 /// Alto (px lógicos) de cada panel apilado en una barra vertical
-fn v_height(k: Kind, show_ip: bool, usage: UsageShow) -> f32 {
+fn v_height(k: Kind, show_ip: bool, ai_rows: usize) -> f32 {
     match k {
         Kind::Ip => if show_ip { 96.0 } else { 66.0 },
-        Kind::Usage => match usage { UsageShow::Both => 96.0, UsageShow::Claude => 66.0, UsageShow::Copilot => 36.0 },
+        Kind::Usage => 6.0 + 30.0 * ai_rows.max(1) as f32,
         Kind::System => 144.0,
         Kind::Media => 0.0, // depende del ancho (media_v_height)
     }
@@ -1246,24 +1594,6 @@ fn paint_ip_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, show_i
     }
 }
 
-fn paint_usage_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, show: UsageShow) {
-    let row = |label, r: &state::UsageRow, col| VBlock {
-        label,
-        value: r.text.clone(),
-        sub: String::new(),
-        sub_col: DIM,
-        col: severity(r.pct, col),
-        hist: None,
-        frac: r.pct.map(|p| p as f32 / 100.0),
-    };
-    let blocks = match show {
-        UsageShow::Both => vec![row("Claude 5h", &s.usage[0], CLAUDE5), row("Claude 7d", &s.usage[1], CLAUDE7), row("Copilot", &s.usage[2], COPILOT)],
-        UsageShow::Claude => vec![row("Claude 5h", &s.usage[0], CLAUDE5), row("Claude 7d", &s.usage[1], CLAUDE7)],
-        UsageShow::Copilot => vec![row("Copilot", &s.usage[2], COPILOT)],
-    };
-    paint_vblocks(c, w, h, sc, &blocks);
-}
-
 fn paint_system_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
     let t = |v: i32| if v >= 0 { format!("{v}°") } else { String::new() };
     let fps_max = s.hist_fps.iter().fold(60.0f32, |m, v| m.max(*v)) * 1.15;
@@ -1274,7 +1604,7 @@ fn paint_system_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
         {
             let (used, letter) = system_drive(s).map(|d| ((1.0 - d.free / d.total) as f32, d.letter)).unwrap_or((0.0, 'C'));
             VBlock {
-                label: if letter == 'C' { "DISCO C:" } else { "DISCO" },
+                label: if letter == 'C' { tr("DISCO C:", "DISK C:") } else { tr("DISCO", "DISK") },
                 value: format!("{:.0}%", used * 100.0),
                 sub: rate_short((s.disk_read + s.disk_write) / 8.0),
                 sub_col: DIM,
@@ -1391,7 +1721,7 @@ fn paint_media_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, p: 
 
 /// Apila los paneles en una barra vertical: red/consumo/sistema hacia arriba desde la bandeja,
 /// multimedia bajo los iconos de aplicaciones
-unsafe fn place_vertical(panels: &mut [Panel], b: &Taskbar, hide: bool, show_ip: bool, usage: UsageShow) {
+unsafe fn place_vertical(panels: &mut [Panel], b: &Taskbar, hide: bool, show_ip: bool, usage: usize, media_active: bool) {
     let sc = b.scale;
     let m = (4.0 * sc) as i32;
     let x = b.rect.left + m;
@@ -1415,8 +1745,8 @@ unsafe fn place_vertical(panels: &mut [Panel], b: &Taskbar, hide: bool, show_ip:
         p.vertical = true;
         let top = b.tasks_bottom + (10.0 * sc) as i32;
         let need = media_v_height(w as f32, sc) as i32;
-        if hide || w < 20 || bottom - top < need {
-            let _ = ShowWindow(p.hwnd, SW_HIDE); // sin espacio entre los iconos y los paneles
+        if hide || !media_active || w < 20 || bottom - top < need {
+            let _ = ShowWindow(p.hwnd, SW_HIDE); // sin reproducción o sin espacio entre los iconos y los paneles
         } else {
             let _ = SetWindowPos(p.hwnd, HWND_TOPMOST, x, top, w, need, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
@@ -1424,7 +1754,7 @@ unsafe fn place_vertical(panels: &mut [Panel], b: &Taskbar, hide: bool, show_ip:
 }
 
 /// Dibuja el panel en su lienzo y lo publica con alfa por píxel
-unsafe fn render(p: &mut Panel, s: &state::State, bars_style: bool, show: UsageShow, show_ip: bool, t: f32) {
+unsafe fn render(p: &mut Panel, s: &state::State, bars_style: bool, view: &AiView, show_ip: bool, t: f32) {
     if !IsWindowVisible(p.hwnd).as_bool() {
         return;
     }
@@ -1441,12 +1771,14 @@ unsafe fn render(p: &mut Panel, s: &state::State, bars_style: bool, show: UsageS
     surf.clear();
     let (wf, hf, sc) = (w as f32, h as f32, p.scale);
     match (p.kind, p.vertical) {
+        (Kind::Usage, false) if p.compact => paint_ai_compact(&mut surf, wf, hf, sc, view),
+        (Kind::System, false) if p.compact => paint_system_compact(&mut surf, wf, hf, sc, s),
         (Kind::Ip, false) => paint_ip(&mut surf, wf, hf, sc, s, t, show_ip),
-        (Kind::Usage, false) => paint_usage(&mut surf, wf, hf, sc, s, show),
+        (Kind::Usage, false) => paint_ai(&mut surf, wf, hf, sc, view),
         (Kind::System, false) => paint_system(&mut surf, wf, hf, sc, s),
         (Kind::Media, false) => paint_media(&mut surf, wf, hf, sc, s, p, bars_style, t),
         (Kind::Ip, true) => paint_ip_v(&mut surf, wf, hf, sc, s, show_ip),
-        (Kind::Usage, true) => paint_usage_v(&mut surf, wf, hf, sc, s, show),
+        (Kind::Usage, true) => paint_ai_v(&mut surf, wf, hf, sc, view),
         (Kind::System, true) => paint_system_v(&mut surf, wf, hf, sc, s),
         (Kind::Media, true) => paint_media_v(&mut surf, wf, hf, sc, s, p, t),
     }
@@ -1458,12 +1790,13 @@ unsafe fn render_kind(media_only: bool) {
     let s = st().clone();
     with_app(|app| {
         let bars = app.cfg.v["SpectrumStyle"].as_str() == Some("bars");
-        let show = usage_show(&app.cfg);
+        let view = AiView::from_cfg(&app.cfg);
+        AI_POPUP_H.store(ai_popup_h(&view).to_bits(), std::sync::atomic::Ordering::Relaxed);
         let show_ip = app.cfg.v["IpShowAddress"].as_bool().unwrap_or(true);
         let t = app.t0.elapsed().as_secs_f32();
         for p in app.panels.iter_mut() {
             if (p.kind == Kind::Media) == media_only {
-                render(p, &s, bars, show, show_ip, t);
+                render(p, &s, bars, &view, show_ip, t);
             }
         }
     });
@@ -1484,7 +1817,7 @@ unsafe fn create_panel(app: &mut App, kind: Kind, tb: &Taskbar) {
         None,
     );
     let Ok(hwnd) = hwnd else { return };
-    app.panels.push(Panel { hwnd, kind, tb_key: tb.key, scale: tb.scale, caps: Vec::new(), disp: Vec::new(), hover: -1, surf: None, vertical: false, vinyl: 0.0, spin: 0.0, last_t: 0.0 });
+    app.panels.push(Panel { hwnd, kind, tb_key: tb.key, scale: tb.scale, caps: Vec::new(), disp: Vec::new(), hover: -1, surf: None, vertical: false, compact: false, vinyl: 0.0, spin: 0.0, last_t: 0.0 });
 }
 
 fn monitors_for_config(bars: &[Taskbar], cfg: &Config) -> Vec<(String, String, bool)> {
@@ -1523,20 +1856,49 @@ unsafe fn sync(app: &mut App) {
     }
     // Posicionar: a la derecha en cadena (IP ← Consumo ← Sistema), multimedia a la izquierda
     let show_ip = app.cfg.v["IpShowAddress"].as_bool().unwrap_or(true);
-    let usage = usage_show(&app.cfg);
+    let usage = AiView::from_cfg(&app.cfg).shown().len();
+    // Multimedia visible mientras haya una sesión (reproduciendo o en pausa); 3 s de gracia
+    if { let s = st(); s.playing || !s.media_app.is_empty() } {
+        app.last_playing = Some(Instant::now());
+    }
+    let media_active = app.last_playing.map(|t| t.elapsed().as_secs_f32() < 3.0).unwrap_or(false);
     for b in &bars {
-        let hide = host::should_hide(b);
+        // La condición de ocultar debe mantenerse ~0,8 s: evita parpadeos por ventanas pasajeras
+        let reason = host::hide_reason(b);
+        let hide = match &reason {
+            Some(_) => app.hide_since.entry(b.key).or_insert_with(Instant::now).elapsed().as_millis() >= 800,
+            None => {
+                app.hide_since.remove(&b.key);
+                false
+            }
+        };
+        if hide != app.hidden.contains(&b.key) {
+            let kind = if b.primary { "principal" } else { "secundaria" };
+            match (&reason, hide) {
+                (Some(r), true) => dbg(&format!("barra {} ({kind}): OCULTAR — {r}", b.monitor_id)),
+                _ => dbg(&format!("barra {} ({kind}): MOSTRAR", b.monitor_id)),
+            }
+            if hide { app.hidden.insert(b.key); } else { app.hidden.remove(&b.key); }
+        }
         if b.vertical {
-            place_vertical(&mut app.panels, b, hide, show_ip, usage);
+            place_vertical(&mut app.panels, b, hide, show_ip, usage, media_active);
             continue;
         }
         let mut offset = app.gap as f32 * b.scale;
+        // ¿Choca la cadena de paneles de la derecha con los iconos de apps? → sistema e IA en modo icono
+        let present = |k: Kind| app.panels.iter().any(|p| p.kind == k && p.tb_key == b.key);
+        let full: f32 = [Kind::Ip, Kind::Usage, Kind::System].iter().filter(|k| present(**k)).map(|k| (k.width() + 14.0) * b.scale).sum();
+        let compact = !b.left_aligned && (b.right as f32 - offset - full) < b.tasks_right as f32 + 16.0 * b.scale;
         for k in [Kind::Ip, Kind::Usage, Kind::System, Kind::Media] {
             let Some(p) = app.panels.iter_mut().find(|p| p.kind == k && p.tb_key == b.key) else { continue };
             p.scale = b.scale;
             p.vertical = false;
             if hide {
                 let _ = ShowWindow(p.hwnd, SW_HIDE);
+                continue;
+            }
+            if k == Kind::Media && !media_active {
+                let _ = ShowWindow(p.hwnd, SW_HIDE); // sin sesión multimedia
                 continue;
             }
             let (x, w) = if k == Kind::Media {
@@ -1550,7 +1912,8 @@ unsafe fn sync(app: &mut App) {
                     }
                 }
             } else {
-                let w = (k.width() * b.scale) as i32;
+                p.compact = compact && matches!(k, Kind::Usage | Kind::System);
+                let w = ((if p.compact { 44.0 } else { k.width() }) * b.scale) as i32;
                 let x = b.right - offset as i32 - w;
                 offset += w as f32 + 14.0 * b.scale;
                 (x, w)
@@ -1613,7 +1976,7 @@ unsafe fn tray_add(hwnd: HWND) {
     d.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     d.uCallbackMessage = WM_TRAY;
     d.hIcon = LoadIconW(HINSTANCE::default(), IDI_INFORMATION).unwrap_or_default();
-    copy_into(&mut d.szTip, "Paneles de la barra de tareas");
+    copy_into(&mut d.szTip, tr("Paneles de la barra de tareas", "Taskbar panels"));
     let _ = Shell_NotifyIconW(NIM_ADD, &d);
 }
 
@@ -1662,11 +2025,25 @@ const ID_SCREENS_PRIMARY: usize = 21;
 const ID_SCREEN_BASE: usize = 30; // +índice de barra
 const ID_STYLE_WAVE: usize = 40;
 const ID_STYLE_BARS: usize = 41;
-const ID_USAGE_BOTH: usize = 50;
-const ID_USAGE_CLAUDE: usize = 51;
-const ID_USAGE_COPILOT: usize = 52;
+const ID_AI_PRIMARY_ALL: usize = 100;
+const ID_AI_PRIMARY_BASE: usize = 101; // +índice de proveedor (hasta 29)
+const ID_AI_TOGGLE_BASE: usize = 130;
+const ID_AI_ADD_OPENAI: usize = 160;
+const ID_AI_ADD_ANTHROPIC: usize = 161;
+const ID_AI_ADD_CUSTOM: usize = 162;
+const ID_AI_REMOVE_BASE: usize = 170;
 const ID_SHOW_IP: usize = 60;
+const ID_POPUP_STYLE_BASE: usize = 80; // +índice de POPUP_STYLES
+const ID_LANG_AUTO: usize = 90;
+const ID_LANG_ES: usize = 91;
+const ID_LANG_EN: usize = 92;
 const ID_EXIT: usize = 99;
+
+/// Agrega un submenú con texto traducido
+unsafe fn append_sub(menu: HMENU, sub: HMENU, text: &str) {
+    let t = wide(text);
+    let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, PCWSTR(t.as_ptr()));
+}
 
 unsafe fn append(menu: HMENU, id: usize, text: &str, checked: bool) {
     let t = wide(text);
@@ -1689,48 +2066,91 @@ unsafe fn show_menu(main: HWND) {
         serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect(),
         _ => vec![],
     };
+    let (ai_list, ai_primary) = with_app(|a| (ai::providers(&a.cfg), ai::primary(&a.cfg))).unwrap_or_default();
     let Ok(menu) = CreatePopupMenu() else { return };
     let show_ip = with_app(|a| a.cfg.v["IpShowAddress"].as_bool().unwrap_or(true)).unwrap_or(true);
-    append(menu, ID_SHOW_IP, "Mostrar IP pública", show_ip);
-    append(menu, ID_COPY_IP, "Copiar IP", false);
-    append(menu, ID_REFRESH_IP, "Actualizar IP", false);
-    append(menu, ID_REFRESH_USAGE, "Actualizar consumo", false);
+    append(menu, ID_SHOW_IP, tr("Mostrar IP pública", "Show public IP"), show_ip);
+    append(menu, ID_COPY_IP, tr("Copiar IP", "Copy IP"), false);
+    append(menu, ID_REFRESH_IP, tr("Actualizar IP", "Refresh IP"), false);
+    append(menu, ID_REFRESH_USAGE, tr("Actualizar consumo", "Refresh usage"), false);
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    append(menu, ID_OPEN_CLAUDE, "Abrir uso de Claude", false);
-    append(menu, ID_OPEN_COPILOT, "Abrir uso de Copilot", false);
+    append(menu, ID_OPEN_CLAUDE, tr("Abrir uso de Claude", "Open Claude usage"), false);
+    append(menu, ID_OPEN_COPILOT, tr("Abrir uso de Copilot", "Open Copilot usage"), false);
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     if let Ok(sub) = CreatePopupMenu() {
         for (i, k) in KINDS.iter().enumerate() {
             append(sub, ID_PANEL_BASE + i, k.label(), enabled[i]);
         }
-        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Paneles"));
+        append_sub(menu, sub, tr("Paneles", "Panels"));
     }
     if let Ok(sub) = CreatePopupMenu() {
-        append(sub, ID_SCREENS_ALL, "Todas", cfg_sel.as_str() == Some("all"));
-        append(sub, ID_SCREENS_PRIMARY, "Solo la principal", cfg_sel.as_str() == Some("primary"));
+        append(sub, ID_SCREENS_ALL, tr("Todas", "All"), cfg_sel.as_str() == Some("all"));
+        append(sub, ID_SCREENS_PRIMARY, tr("Solo la principal", "Primary only"), cfg_sel.as_str() == Some("primary"));
         let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
         for (i, (id, name, primary)) in monitors.iter().enumerate() {
-            let label = format!("{name}  ({id}){}", if *primary { " · principal" } else { "" });
+            let label = format!("{name}  ({id}){}", if *primary { tr(" · principal", " · primary") } else { "" });
             append(sub, ID_SCREEN_BASE + i, &label, selected_ids.contains(id));
         }
-        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Pantallas"));
+        append_sub(menu, sub, tr("Pantallas", "Displays"));
     }
     let bars_style = with_app(|a| a.cfg.v["SpectrumStyle"].as_str() == Some("bars")).unwrap_or(false);
     if let Ok(sub) = CreatePopupMenu() {
-        append(sub, ID_STYLE_WAVE, "Onda líquida", !bars_style);
-        append(sub, ID_STYLE_BARS, "Barras cápsula", bars_style);
-        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Estilo del espectro"));
+        append(sub, ID_STYLE_WAVE, tr("Onda líquida", "Liquid wave"), !bars_style);
+        append(sub, ID_STYLE_BARS, tr("Barras cápsula", "Capsule bars"), bars_style);
+        append_sub(menu, sub, tr("Estilo del espectro", "Spectrum style"));
     }
-    let show = with_app(|a| usage_show(&a.cfg)).unwrap_or(UsageShow::Both);
+    // IA: proveedor principal, activar/desactivar, agregar y quitar
+    if let Ok(ai_menu) = CreatePopupMenu() {
+        if let Ok(sub) = CreatePopupMenu() {
+            append(sub, ID_AI_PRIMARY_ALL, tr("Todos (resumen)", "All (summary)"), ai_primary == "all");
+            let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
+            for (i, p) in ai_list.iter().enumerate().filter(|(_, p)| p.enabled) {
+                append(sub, ID_AI_PRIMARY_BASE + i, &p.name, ai_primary == p.id);
+            }
+            append_sub(ai_menu, sub, tr("Proveedor principal", "Primary provider"));
+        }
+        if let Ok(sub) = CreatePopupMenu() {
+            for (i, p) in ai_list.iter().enumerate() {
+                append(sub, ID_AI_TOGGLE_BASE + i, &p.name, p.enabled);
+            }
+            append_sub(ai_menu, sub, tr("Proveedores", "Providers"));
+        }
+        if let Ok(sub) = CreatePopupMenu() {
+            append(sub, ID_AI_ADD_OPENAI, tr("API de OpenAI…", "OpenAI API…"), false);
+            append(sub, ID_AI_ADD_ANTHROPIC, tr("API de Anthropic…", "Anthropic API…"), false);
+            append(sub, ID_AI_ADD_CUSTOM, tr("Personalizado (URL JSON)…", "Custom (JSON URL)…"), false);
+            append_sub(ai_menu, sub, tr("Agregar proveedor", "Add provider"));
+        }
+        let removable: Vec<(usize, &ai::ProviderCfg)> = ai_list.iter().enumerate().filter(|(_, p)| !matches!(p.kind.as_str(), "claude" | "copilot")).collect();
+        if !removable.is_empty() {
+            if let Ok(sub) = CreatePopupMenu() {
+                for (i, p) in removable {
+                    append(sub, ID_AI_REMOVE_BASE + i, &p.name, false);
+                }
+                append_sub(ai_menu, sub, tr("Quitar proveedor", "Remove provider"));
+            }
+        }
+        append_sub(menu, ai_menu, tr("IA", "AI"));
+    }
+    let pstyle = with_app(|a| popup_style(&a.cfg)).unwrap_or_else(|| "glass".into());
     if let Ok(sub) = CreatePopupMenu() {
-        append(sub, ID_USAGE_BOTH, "Claude y Copilot", show == UsageShow::Both);
-        append(sub, ID_USAGE_CLAUDE, "Solo Claude", show == UsageShow::Claude);
-        append(sub, ID_USAGE_COPILOT, "Solo Copilot", show == UsageShow::Copilot);
-        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Consumo"));
+        for (i, (k, label)) in POPUP_STYLES.iter().enumerate() {
+            let l = label.split('|').nth(if i18n::es() { 0 } else { 1 }).unwrap_or(label);
+            append(sub, ID_POPUP_STYLE_BASE + i, l, pstyle == *k);
+        }
+        append_sub(menu, sub, tr("Fondo de las ventanas", "Window background"));
     }
-    append(menu, ID_RESET_POS, "Reiniciar posición", false);
+    // Idioma: automático (sistema), español o inglés
+    let lang = with_app(|a| a.cfg.v["Language"].as_str().unwrap_or("auto").to_string()).unwrap_or_else(|| "auto".into());
+    if let Ok(sub) = CreatePopupMenu() {
+        append(sub, ID_LANG_AUTO, tr("Automático (idioma del sistema)", "Automatic (system language)"), lang != "es" && lang != "en");
+        append(sub, ID_LANG_ES, "Español", lang == "es");
+        append(sub, ID_LANG_EN, "English", lang == "en");
+        append_sub(menu, sub, tr("Idioma", "Language"));
+    }
+    append(menu, ID_RESET_POS, tr("Reiniciar posición", "Reset position"), false);
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    append(menu, ID_EXIT, "Salir", false);
+    append(menu, ID_EXIT, tr("Salir", "Exit"), false);
 
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
@@ -1739,18 +2159,21 @@ unsafe fn show_menu(main: HWND) {
     let _ = PostMessageW(main, WM_NULL, WPARAM(0), LPARAM(0));
     let _ = DestroyMenu(menu);
     if cmd != 0 {
-        on_command(main, cmd, &monitors, &selected_ids);
+        on_command(main, cmd, &monitors, &selected_ids, &ai_list);
     }
 }
 
-unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)], selected: &[String]) {
+unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)], selected: &[String], ai_list: &[ai::ProviderCfg]) {
     match cmd {
         ID_COPY_IP => {
             let ip = st().ip.clone();
             copy_to_clipboard(main, &ip);
         }
         ID_REFRESH_IP => state::refresh_ip(),
-        ID_REFRESH_USAGE => state::refresh_usage(),
+        ID_REFRESH_USAGE => ai::refresh(),
+        ID_AI_ADD_OPENAI => ai::add_provider_async("openai"),
+        ID_AI_ADD_ANTHROPIC => ai::add_provider_async("anthropic_api"),
+        ID_AI_ADD_CUSTOM => ai::add_provider_async("custom"),
         ID_OPEN_CLAUDE => util::open_url("https://claude.ai/settings/usage"),
         ID_OPEN_COPILOT => util::open_url("https://github.com/settings/copilot"),
         ID_EXIT => {
@@ -1772,18 +2195,40 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
                 app.cfg.set_enabled(k.name(), on);
                 save = true;
             }
+            c if (ID_POPUP_STYLE_BASE..ID_POPUP_STYLE_BASE + POPUP_STYLES.len()).contains(&c) => {
+                app.cfg.v["PopupStyle"] = serde_json::json!(POPUP_STYLES[c - ID_POPUP_STYLE_BASE].0);
+                save = true;
+            }
+            ID_LANG_AUTO | ID_LANG_ES | ID_LANG_EN => {
+                let v = match cmd {
+                    ID_LANG_ES => "es",
+                    ID_LANG_EN => "en",
+                    _ => "auto",
+                };
+                app.cfg.v["Language"] = serde_json::json!(v);
+                i18n::init(Some(v));
+                save = true;
+            }
             ID_SHOW_IP => {
                 let on = app.cfg.v["IpShowAddress"].as_bool().unwrap_or(true);
                 app.cfg.v["IpShowAddress"] = serde_json::json!(!on);
                 save = true;
             }
-            ID_USAGE_BOTH | ID_USAGE_CLAUDE | ID_USAGE_COPILOT => {
-                let v = match cmd {
-                    ID_USAGE_CLAUDE => "claude",
-                    ID_USAGE_COPILOT => "copilot",
-                    _ => "both",
-                };
-                app.cfg.v["UsageShow"] = serde_json::json!(v);
+            ID_AI_PRIMARY_ALL => {
+                app.cfg.v["AiPrimary"] = serde_json::json!("all");
+                save = true;
+            }
+            c if c >= ID_AI_PRIMARY_BASE && c < ID_AI_PRIMARY_BASE + ai_list.len() => {
+                app.cfg.v["AiPrimary"] = serde_json::json!(ai_list[c - ID_AI_PRIMARY_BASE].id);
+                save = true;
+            }
+            c if c >= ID_AI_TOGGLE_BASE && c < ID_AI_TOGGLE_BASE + ai_list.len() => {
+                ai::toggle_provider(&mut app.cfg, &ai_list[c - ID_AI_TOGGLE_BASE].id);
+                ai::refresh();
+                save = true;
+            }
+            c if c >= ID_AI_REMOVE_BASE && c < ID_AI_REMOVE_BASE + ai_list.len() => {
+                ai::remove_provider(&mut app.cfg, &ai_list[c - ID_AI_REMOVE_BASE].id);
                 save = true;
             }
             ID_STYLE_WAVE | ID_STYLE_BARS => {
@@ -1866,14 +2311,40 @@ unsafe fn on_main_timer(main: HWND) {
         let s = st();
         (s.ip.clone(), s.isp.clone(), s.city.clone())
     };
-    let tip = [format!("IP pública: {ip}"), isp, city].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n");
+    let tip = [format!("{}: {ip}", tr("IP pública", "Public IP")), isp, city].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n");
     tray_tip(main, &tip);
     if let Some((old, new, isp)) = balloon {
-        tray_balloon(main, "Cambió la IP pública", &format!("{old} → {new}\n{isp}"));
+        tray_balloon(main, tr("Cambió la IP pública", "Public IP changed"), &format!("{old} → {new}\n{isp}"));
     }
 }
 
+thread_local! {
+    /// hasta cuándo hay que reafirmar los paneles por encima de la barra (tras un cambio de primer plano)
+    static RAISE_UNTIL: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Cambio de ventana en primer plano (incluye clics en la barra de tareas y sus desplegables): la
+/// barra, al activarse, se coloca por encima de las ventanas "siempre encima" y taparía los paneles
+unsafe extern "system" fn on_foreground(_h: windows::Win32::UI::Accessibility::HWINEVENTHOOK, _e: u32, _w: HWND, _o: i32, _c: i32, _t: u32, _ms: u32) {
+    RAISE_UNTIL.with(|r| r.set(Some(Instant::now() + std::time::Duration::from_millis(600))));
+    raise_panels();
+}
+
+/// Vuelve a poner los paneles visibles por encima de todo (sin moverlos ni activarlos)
+unsafe fn raise_panels() {
+    with_app(|app| {
+        for p in &app.panels {
+            if IsWindowVisible(p.hwnd).as_bool() {
+                let _ = SetWindowPos(p.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+    });
+}
+
 unsafe fn on_fast_timer() {
+    if RAISE_UNTIL.with(|r| r.get()).map(|u| Instant::now() < u).unwrap_or(false) {
+        raise_panels();
+    }
     render_kind(true);
     update_popup();
 }
@@ -2078,21 +2549,34 @@ fn demo_state() {
     s.hist_up = wave(0.17, 6e4, 1e4);
     s.ip = "203.0.113.42".into();
     s.isp = "Example ISP S.A.".into();
-    s.city = "Ciudad, País".into();
+    s.city = tr("Ciudad, País", "City, Country").into();
     s.sess_down = 1.84e9;
     s.sess_up = 2.1e8;
-    s.usage = [
-        state::UsageRow { pct: Some(42.0), text: "42%".into() },
-        state::UsageRow { pct: Some(18.0), text: "18%".into() },
-        state::UsageRow { pct: Some(12.5), text: "12.5%".into() },
-    ];
-    s.claude_plan = "pro".into();
-    s.claude_reset5 = Some(util::now_epoch() + 2 * 3600 + 17 * 60);
-    s.claude_reset7 = Some(util::now_epoch() + 4 * 86_400 + 6 * 3600);
-    s.copilot_plan = "business".into();
-    (s.copilot_used, s.copilot_total, s.copilot_unlimited) = (37.0, 300.0, false);
-    s.copilot_detail = "37 / 300".into();
-    s.copilot_reset = Some(util::now_epoch() + 16 * 86_400);
+    {
+        let now = util::now_epoch();
+        let m = |label: &str, pct: f64, value: &str, detail: &str, reset: i64| ai::Metric {
+            label: label.into(),
+            pct: Some(pct),
+            value: value.into(),
+            detail: detail.into(),
+            reset: Some(now + reset),
+        };
+        let prov = |id: &str, kind: &str, name: &str, plan: &str, metrics: Vec<ai::Metric>| ai::Provider {
+            id: id.into(),
+            kind: kind.into(),
+            name: name.into(),
+            plan: plan.into(),
+            metrics,
+            status: String::new(),
+            fetched_at: now,
+        };
+        *ai::AI.lock().unwrap() = vec![
+            prov("claude", "claude", "Claude", "pro", vec![m("session5h", 42.0, "42%", "", 2 * 3600 + 17 * 60), m("weekly", 18.0, "18%", "", 4 * 86_400 + 6 * 3600)]),
+            prov("copilot", "copilot", "GitHub Copilot", "business", vec![m("premium", 12.5, "12.5%", "37 / 300", 16 * 86_400)]),
+            prov("openai-1", "openai", "OpenAI API", "API", vec![m("month", 31.8, "$15.90", "$15.90 / $50.00", 17 * 86_400)]),
+            prov("custom-1", "custom", "LiteLLM proxy", "", vec![ai::Metric { reset: None, ..m("usage", 64.0, "64%", "", 0) }]),
+        ];
+    }
     (s.cpu, s.cpu_t, s.gpu, s.gpu_t, s.fps, s.fan_c, s.fan_g) = (38.0, 71, 64, 66, 165, 3100, 2900);
     s.app = "Game.exe".into();
     s.cpu_name = "Intel Core Ultra 9 275HX".into();
@@ -2110,11 +2594,11 @@ fn demo_state() {
     s.hist_disk_w = wave(0.15, 1.6e7, 5e5);
     s.drives = vec![
         state::Drive { letter: 'C', label: "Windows".into(), total: 2.0e12, free: 0.94e12 },
-        state::Drive { letter: 'D', label: "Datos".into(), total: 2.0e12, free: 1.62e12 },
+        state::Drive { letter: 'D', label: tr("Datos", "Data").into(), total: 2.0e12, free: 1.62e12 },
     ];
-    s.title = "Artista de ejemplo - Canción de demostración (Remasterizada)".into();
-    s.artist = "Artista de ejemplo".into();
-    s.media_album = "Álbum de ejemplo".into();
+    s.title = tr("Artista de ejemplo - Canción de demostración (Remasterizada)", "Example Artist - Demo Song (Remastered)").into();
+    s.artist = tr("Artista de ejemplo", "Example Artist").into();
+    s.media_album = tr("Álbum de ejemplo", "Example Album").into();
     s.media_app = "Spotify".into();
     s.playing = true;
     drop(s);
@@ -2133,17 +2617,37 @@ fn demo_state() {
     }
     *media::ART.lock().unwrap() = Some(std::sync::Arc::new(media::Art { key: "demo".into(), px, accent: (240, 110, 210) }));
     *media::TIMELINE.lock().unwrap() = media::Timeline { pos: 131.0, dur: 247.0, at: None };
+    *net::INFO.lock().unwrap() = Some(net::NetInfo {
+        adapter: "Wi-Fi".into(),
+        wifi: true,
+        link_bps: 1_201_000_000,
+        local_ip: "192.168.1.20".into(),
+        gateway: "192.168.1.1".into(),
+        dns: vec!["1.1.1.1".into(), "8.8.8.8".into()],
+    });
+    *net::PING.lock().unwrap() = net::PingStats {
+        last: Some(3),
+        hist: (0..30).map(|i| 2.5 + ((i as f32 * 0.7).sin().abs() * 4.0)).collect(),
+        sent: 30,
+        lost: 0,
+        min: 2,
+        max: 7,
+        sum: 105,
+        reply_at: None,
+    };
     *media::LEVELS.lock().unwrap() = (0..media::BANDS).map(|i| 0.2 + 0.65 * ((i as f32 * 0.37).sin().abs()) * (1.0 - i as f32 / 90.0)).collect();
 }
 
 fn demo_panel(kind: Kind) -> Panel {
-    Panel { hwnd: HWND::default(), kind, tb_key: 0, scale: 1.5, caps: vec![], disp: vec![], hover: -1, surf: None, vertical: false, vinyl: 1.0, spin: 0.6, last_t: 0.0 }
+    Panel { hwnd: HWND::default(), kind, tb_key: 0, scale: 1.5, caps: vec![], disp: vec![], hover: -1, surf: None, vertical: false, compact: false, vinyl: 1.0, spin: 0.6, last_t: 0.0 }
 }
 
 /// `taskbar-panels.exe --render-demo <carpeta>`: genera las imágenes del README con datos ficticios
 fn render_demo(dir: &str) {
     demo_state();
     let s = st().clone();
+    let demo_view = AiView { list: ai::AI.lock().unwrap().clone(), primary: "claude".into() };
+    AI_POPUP_H.store(ai_popup_h(&demo_view).to_bits(), std::sync::atomic::Ordering::Relaxed);
     let sc = 1.5f32;
     let tb_h = 72;
     let bar_bg = (26u8, 30u8, 48u8);
@@ -2160,7 +2664,7 @@ fn render_demo(dir: &str) {
             let t = 3.0 + frame as f32 * 0.016;
             match kind {
                 Kind::Ip => paint_ip(&mut c, w as f32, tb_h as f32, sc, &s, t, true),
-                Kind::Usage => paint_usage(&mut c, w as f32, tb_h as f32, sc, &s, UsageShow::Both),
+                Kind::Usage => paint_ai(&mut c, w as f32, tb_h as f32, sc, &demo_view),
                 Kind::System => paint_system(&mut c, w as f32, tb_h as f32, sc, &s),
                 Kind::Media => paint_media(&mut c, w as f32, tb_h as f32, sc, &s, &mut p, false, t),
             }
@@ -2194,9 +2698,9 @@ fn render_demo(dir: &str) {
         for _ in 0..30 {
             match kind {
                 Kind::System => paint_popup_system(&mut c, pw as f32, ph as f32, sc, &s),
-                Kind::Ip => paint_popup_ip(&mut c, pw as f32, ph as f32, sc, &s),
-                Kind::Usage => paint_popup_usage(&mut c, pw as f32, ph as f32, sc, &s),
-                Kind::Media => paint_popup_media(&mut c, pw as f32, ph as f32, sc, &s, &mut disp, 3.0),
+                Kind::Ip => paint_popup_ip(&mut c, pw as f32, ph as f32, sc, &s, 3.0),
+                Kind::Usage => paint_popup_ai(&mut c, pw as f32, ph as f32, sc, &demo_view),
+                Kind::Media => paint_popup_media(&mut c, pw as f32, ph as f32, sc, &s, &mut disp, 3.0, false),
             }
         }
         bg.gradient_bg(Rgb::u8(58, 34, 92), Rgb::u8(24, 46, 96));
@@ -2211,7 +2715,7 @@ fn render_demo(dir: &str) {
     let vw = (44.0 * sc) as i32;
     let mut blocks = Vec::new();
     for kind in [Kind::Media, Kind::System, Kind::Usage, Kind::Ip] {
-        let h = if kind == Kind::Media { media_v_height(vw as f32, sc) as i32 } else { (v_height(kind, true, UsageShow::Both) * sc) as i32 };
+        let h = if kind == Kind::Media { media_v_height(vw as f32, sc) as i32 } else { (v_height(kind, true, demo_view.shown().len()) * sc) as i32 };
         let Some(mut c) = Surface::new(vw, h) else { continue };
         let mut p = demo_panel(kind);
         p.vertical = true;
@@ -2220,7 +2724,7 @@ fn render_demo(dir: &str) {
             let t = 3.0 + frame as f32 * 0.016;
             match kind {
                 Kind::Ip => paint_ip_v(&mut c, vw as f32, h as f32, sc, &s, true),
-                Kind::Usage => paint_usage_v(&mut c, vw as f32, h as f32, sc, &s, UsageShow::Both),
+                Kind::Usage => paint_ai_v(&mut c, vw as f32, h as f32, sc, &demo_view),
                 Kind::System => paint_system_v(&mut c, vw as f32, h as f32, sc, &s),
                 Kind::Media => paint_media_v(&mut c, vw as f32, h as f32, sc, &s, &mut p, t),
             }
@@ -2244,9 +2748,12 @@ fn render_demo(dir: &str) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 3 && args[1] == "--render-demo" {
+        i18n::init(Some(args.get(3).map(|s| s.as_str()).unwrap_or("es")));
         render_demo(&args[2]);
         return;
     }
+    // Idioma: el de Windows, salvo que config.json lo fije ("Language": "es" | "en")
+    i18n::init(Config::load().v["Language"].as_str());
     unsafe {
         windows::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler(1, Some(crash_handler));
         // Instancia única
@@ -2296,14 +2803,20 @@ fn main() {
                 hover_since: None,
                 popup_kind: None,
                 popup_disp: Vec::new(),
+                hide_since: Default::default(),
+                hidden: Default::default(),
+                last_playing: None,
+                popup_style: String::new(),
             })
         });
 
         state::spawn_ip_worker();
-        state::spawn_usage_worker();
+        ai::spawn_worker();
         sys::spawn_sys_worker();
         media::spawn_media_worker();
         media::spawn_audio_worker();
+        net::spawn_net_worker();
+        host::spawn_icons_watcher();
 
         tray_add(main);
         with_app(|app| {
@@ -2316,6 +2829,16 @@ fn main() {
         });
         SetTimer(main, TIMER_MAIN, 1000, None);
         SetTimer(main, TIMER_FAST, 16, None);
+        // Reafirmar los paneles cuando cambia la ventana en primer plano (clic en la barra, desplegables...)
+        let _hook = windows::Win32::UI::Accessibility::SetWinEventHook(
+            0x0003, // EVENT_SYSTEM_FOREGROUND
+            0x0003,
+            None,
+            Some(on_foreground),
+            0,
+            0,
+            0x0000 | 0x0002, // WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+        );
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {

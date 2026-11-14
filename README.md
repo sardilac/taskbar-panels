@@ -13,10 +13,10 @@ detalle de cada panel, todo en un solo proceso de ~60 MB de RAM y menos del 1 % 
 
 | Panel | En la barra | Al pasar el mouse |
 |---|---|---|
-| **Multimedia** | Carátula con vinilo animado, botones anterior / reproducir / siguiente con el color del álbum, título desplazable, progreso y espectro de audio (onda líquida o barras cápsula) | Carátula grande, título, artista, álbum, app, tiempos y espectro |
+| **Multimedia** (si hay algo reproduciéndose o en pausa) | Carátula con vinilo animado, botones anterior / reproducir / siguiente con el color del álbum, título desplazable, progreso y espectro de audio (onda líquida o barras cápsula) | Carátula grande, título, artista, álbum, app, tiempos y espectro |
 | **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa y anillo del disco del sistema con lectura/escritura | Modelo de CPU/GPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas |
-| **Consumo de IA** | Claude (sesión de 5 h y semanal) y GitHub Copilot (solicitudes premium) | Plan, barras y cuándo se reinicia cada límite (hora local) |
-| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, máximos del último minuto y totales de la sesión |
+| **Consumo de IA** | El proveedor principal con su icono (o un resumen de todos) | Una tarjeta por proveedor: icono, plan, barras, gasto y reinicios (hora local) |
+| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto y totales de la sesión |
 
 <p>
   <img src="docs/images/popup-sistema.png" width="300" alt="Ventana flotante de sistema">
@@ -28,7 +28,7 @@ detalle de cada panel, todo en un solo proceso de ~60 MB de RAM y menos del 1 % 
   <img src="docs/images/barra-vertical.png" height="420" alt="Barra vertical">
 </p>
 
-**Se adapta a la barra:** varias pantallas (todas, solo la principal o una selección por monitor),
+**Se adapta a la barra:** si hay muchas apps abiertas, los paneles de sistema e IA se comprimen a un icono; varias pantallas (todas, solo la principal o una selección por monitor),
 barra pequeña o normal, barra arriba, barras verticales (izquierda/derecha, con mods como Windhawk),
 iconos centrados o a la izquierda y escala por monitor. Los paneles se ocultan con juegos o
 videos a pantalla completa.
@@ -48,6 +48,7 @@ Funciones que dependen del equipo (si no están disponibles, el panel muestra «
 | FPS | [PresentMon](https://github.com/GameTechDev/PresentMon) de Intel (el instalador lo descarga) |
 | Consumo de Claude | Sesión iniciada en **Claude Code** en ese usuario |
 | Consumo de Copilot | Credencial de GitHub guardada por **Git Credential Manager** con Copilot activo |
+| Gasto de la API de OpenAI / Anthropic | Una **clave de administrador** de cada plataforma (se pide al agregar el proveedor) |
 
 ## Instalación
 
@@ -84,7 +85,9 @@ powershell -ExecutionPolicy Bypass -File "C:\Program Files\TaskbarPanels\uninsta
 - **Paneles**: activar o desactivar cada panel
 - **Pantallas**: todas, solo la principal o una selección de monitores
 - **Estilo del espectro**: onda líquida o barras cápsula
-- **Consumo**: Claude y Copilot, solo Claude o solo Copilot
+- **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, personalizado por URL JSON) y quitar
+- **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u oscuro
+- **Idioma / Language**: automático (idioma de Windows), español o inglés
 - **Reiniciar posición**, **Salir**
 
 Además: los botones multimedia funcionan sin quitar el foco a la ventana activa, el panel de red
@@ -99,9 +102,12 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Pantallas donde se muestran los paneles (códigos EDID, ver `MonitorIds`) |
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Selección por panel: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Activar o desactivar paneles |
-| `UsageShow` | `"both"`, `"claude"`, `"copilot"` | Qué consumo mostrar |
+| `AiProviders` | lista de proveedores | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "custom", "name", "enabled", "budget" }`; los personalizados añaden `url`, `percentField`, `valueField`, `labelField`. Las claves van al Administrador de credenciales (`TaskbarPanels:<id>`) |
+| `AiPrimary` | `"all"` o un `id` | Proveedor que se muestra en la barra |
 | `IpShowAddress` | `true` / `false` | Mostrar la IP pública en el panel de red |
-| `SpectrumStyle` | `"wave"`, `"bars"` | Estilo del espectro de audio |
+| `SpectrumStyle` | `"wave"`, `"bars"` | Estilo del espectro de audio (panel y ventana) |
+| `Language` | `"auto"`, `"es"`, `"en"` | Idioma de la interfaz (por defecto, el de Windows: español o, si no, inglés) |
+| `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Fondo de las ventanas flotantes |
 | `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias |
 | `MonitorIds` | (informativo) | Código → nombre de los monitores detectados |
 
@@ -128,9 +134,12 @@ src/
   main.rs     ventanas, dibujo de los paneles, menús y ventanas flotantes
   render.rs   lienzo con alfa por píxel (UpdateLayeredWindow), formas y texto suavizados
   host.rs     barras de tareas, monitores, orientación, pantalla completa (Win32 + UI Automation)
-  state.rs    estado compartido; IP pública y consumo de Claude/Copilot
+  state.rs    estado compartido e IP pública
+  ai.rs       proveedores de IA (Claude, Copilot, OpenAI, Anthropic, personalizados) y credenciales
+  net.rs      red local: adaptador, puerta de enlace, DNS (GetAdaptersAddresses) y ping (IcmpSendEcho)
   sys.rs      CPU/disco (PDH), GPU (NVML), sensores Lenovo (WMI), FPS (PresentMon), RAM, unidades
   media.rs    sesión multimedia (WinRT), carátula, línea de tiempo y espectro (WASAPI + FFT)
+  i18n.rs     idioma de la interfaz (español / inglés según Windows)
   config.rs   config.json
 scripts/      install / uninstall / package / make-screenshots
 ```
@@ -154,7 +163,9 @@ El release incluye `TaskbarPanels-vX.Y.Z-x64.zip` y su `.sha256`.
   - `ifconfig.co` (y `api.ipify.org` de respaldo) para la IP pública, cada 5 min;
   - `api.anthropic.com/api/oauth/usage` con el token de Claude Code, cada 3 min;
   - `api.github.com/copilot_internal/user` con tu credencial de GitHub, cada 5 min;
-  - `api.github.com` / `github.com` solo durante la instalación, para descargar PresentMon.
+  - si los agregas: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (cada 5 min) y las URL de tus proveedores personalizados (cada 2 min);
+  - `api.github.com` / `github.com` solo durante la instalación, para descargar PresentMon;
+  - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta.
 - Los endpoints de consumo de Claude y Copilot **no están documentados**: pueden cambiar sin aviso.
   Si responden con error o límite de consultas (429), se conservan los últimos valores.
 - El programa **no renueva** el token de Claude Code: si caduca, se renueva al volver a abrir Claude Code.

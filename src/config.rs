@@ -53,6 +53,14 @@ impl Config {
         self.at = Instant::now();
     }
 
+    /// Guarda config.json tal cual (sin recalcular MonitorIds); usado desde otros hilos
+    pub fn save_raw(&mut self) {
+        if let Ok(s) = serde_json::to_string_pretty(&self.v) {
+            let _ = std::fs::write(appdata_dir().join("config.json"), s);
+        }
+        self.at = Instant::now();
+    }
+
     pub fn selection(&self, panel: &str) -> &Value {
         let pd = self.v.get("PanelDisplays");
         pd.and_then(|p| p.get(panel))

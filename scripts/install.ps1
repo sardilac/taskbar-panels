@@ -47,14 +47,20 @@ $exe = (Resolve-Path $exe).Path
 # ---------------------------------------------------------------- detener versión anterior
 Step 'Deteniendo instancias anteriores'
 Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-Get-Process taskbar-panels -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$old = Get-Process taskbar-panels -ErrorAction SilentlyContinue
+$old | Stop-Process -Force -ErrorAction SilentlyContinue
+$old | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue   # el .exe debe quedar libre antes de copiarlo
 Get-Process PresentMon* -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
 # ---------------------------------------------------------------- copiar archivos
 Step "Copiando a $InstallDir"
 New-Item -ItemType Directory -Force (Join-Path $InstallDir 'tools') | Out-Null
-Copy-Item $exe (Join-Path $InstallDir 'taskbar-panels.exe') -Force
+# reintentos: el archivo puede seguir bloqueado unos instantes tras cerrar el proceso
+for ($i = 1; ; $i++) {
+    try { Copy-Item $exe (Join-Path $InstallDir 'taskbar-panels.exe') -Force; break }
+    catch { if ($i -ge 10) { throw }; Start-Sleep -Milliseconds 500 }
+}
 $pdb = Join-Path (Split-Path $exe) 'taskbar_panels.pdb'
 if (Test-Path $pdb) { Copy-Item $pdb $InstallDir -Force }   # pilas legibles en crash.log
 Copy-Item (Join-Path $PSScriptRoot 'uninstall.ps1') $InstallDir -Force -ErrorAction SilentlyContinue

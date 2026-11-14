@@ -113,7 +113,7 @@ pub fn send(c: Cmd) {
 fn poll(mgr: &GlobalSystemMediaTransportControlsSessionManager) {
     let Ok(s) = mgr.GetCurrentSession() else {
         let mut st = st();
-        st.title = "Sin reproducción".into();
+        st.title = crate::i18n::tr("Sin reproducción", "Nothing playing").into();
         st.artist.clear();
         st.media_app.clear();
         st.playing = false;

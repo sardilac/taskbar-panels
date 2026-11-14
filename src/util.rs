@@ -50,7 +50,7 @@ pub fn parse_iso(s: &str) -> Option<i64> {
 pub fn fmt_left(target: i64) -> String {
     let d = target - now_epoch();
     if d < 60 {
-        "ahora".into()
+        crate::i18n::tr("ahora", "now").into()
     } else if d < 86_400 {
         format!("{}h{:02}", d / 3600, (d % 3600) / 60)
     } else {
@@ -118,12 +118,15 @@ pub fn fmt_local(epoch: i64) -> String {
     if today {
         format!("{h:02}:{mi:02}")
     } else {
-        let dn = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"][dow as usize % 7];
+        let dn = if crate::i18n::es() { ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"] } else { ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] }[dow as usize % 7];
         format!("{dn} {d} {h:02}:{mi:02}")
     }
 }
 
-/// "01/12"
+/// "01/12" (español) o "Dec 1" (inglés)
 pub fn fmt_date(epoch: i64) -> String {
-    local_parts(epoch).map(|(_, d, m, _, _)| format!("{d:02}/{m:02}")).unwrap_or_default()
+    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    local_parts(epoch)
+        .map(|(_, d, m, _, _)| if crate::i18n::es() { format!("{d:02}/{m:02}") } else { format!("{} {d}", MON[(m as usize).clamp(1, 12) - 1]) })
+        .unwrap_or_default()
 }
