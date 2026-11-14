@@ -1,223 +1,233 @@
 # Taskbar Panels
 
-**Español** · [English](README.en.md)
+**English** · [Español](README.es.md)
 
-Paneles modernos y ligeros para la barra de tareas de **Windows 11**, escritos en **Rust**:
-red, consumo de IA (Claude / GitHub Copilot), sistema (CPU, GPU, FPS, discos) y multimedia.
-Transparencia real, animaciones a 60 fps y ventanas flotantes de vidrio esmerilado con el
-detalle de cada panel, todo en un solo proceso de ~60 MB de RAM y menos del 1 % de un núcleo.
+Modern, lightweight panels for the **Windows 11** taskbar, written in **Rust**:
+network, AI usage (Claude / GitHub Copilot / OpenAI / Anthropic), system (CPU, GPU, FPS, disks) and media.
+Real transparency, 60 fps animations and frosted-glass flyouts with the details of each panel,
+all in a single process using ~5–10 MB of private memory and less than 1 % of one core.
 
-![Barra de tareas con los cuatro paneles](docs/images/barra.png)
+![Taskbar with the four panels](docs/images/barra.png)
 
-> Las imágenes se generan con datos de ejemplo (`taskbar-panels.exe --render-demo`).
+> Images are generated with sample data (`taskbar-panels.exe --render-demo`); the interface
+> follows the Windows language (Spanish or English).
 
-## Paneles
+## Panels
 
-| Panel | En la barra | Al pasar el mouse |
+| Panel | On the taskbar | On hover |
 |---|---|---|
-| **Multimedia** (si hay algo reproduciéndose o en pausa) | Carátula con vinilo animado, botones anterior / reproducir / siguiente con el color del álbum, título desplazable, progreso y espectro de audio (onda líquida o barras cápsula) | Carátula grande, título, artista, álbum, app, tiempos y espectro |
-| **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa y anillo del disco del sistema con lectura/escritura | Modelo de CPU/GPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas |
-| **Consumo de IA** | El proveedor principal con su icono (o un resumen de todos) | Una tarjeta por proveedor: icono, plan, barras, gasto y reinicios (hora local) |
-| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto, totales de la sesión y **speed test** bajo demanda (Speedtest.net, Cloudflare, LibreSpeed o GCI) y bandera del país de la IP |
+| **Media** (while something is playing or paused) | Album art with an animated vinyl, previous / play / next buttons tinted with the album color, scrolling title, progress and audio spectrum (5 styles: liquid wave, capsule bars, segmented LED, mirrored bars or neon line) | Large album art, title, artist, album, app, times and spectrum |
+| **System** | CPU and GPU (usage + temperature), FPS of the active window and system-drive ring with read/write | CPU model, every GPU (NVIDIA, AMD Radeon, Intel) and the NPU, clocks, fans, VRAM, power, RAM, every drive as a ring and disk I/O charts |
+| **AI usage** | The primary provider with its icon (or a summary of all of them) | One card per provider: icon, plan, bars, spend and resets (local time) |
+| **Network** | Upload and download with 60 s charts, public IP with status indicator | ISP, location, **country flag** of the IP, router with gateway, DNS, adapter and **gateway ping** (only while the flyout is open), last-minute peaks, session totals and an on-demand **speed test** (Speedtest.net, Cloudflare, LibreSpeed or GCI) |
 
 <p>
-  <img src="docs/images/popup-sistema.png" width="300" alt="Ventana flotante de sistema">
-  <img src="docs/images/popup-multimedia.png" width="300" alt="Ventana flotante de multimedia">
+  <img src="docs/images/popup-sistema.png" width="300" alt="System flyout">
+  <img src="docs/images/popup-multimedia.png" width="300" alt="Media flyout">
 </p>
 <p>
-  <img src="docs/images/popup-red.png" width="300" alt="Ventana flotante de red">
-  <img src="docs/images/popup-consumo.png" width="300" alt="Ventana flotante de consumo">
-  <img src="docs/images/barra-vertical.png" height="420" alt="Barra vertical">
+  <img src="docs/images/popup-red.png" width="300" alt="Network flyout">
+  <img src="docs/images/popup-consumo.png" width="300" alt="AI usage flyout">
+  <img src="docs/images/barra-vertical.png" height="420" alt="Vertical taskbar">
 </p>
 
-**Se adapta a la barra:** si hay muchas apps abiertas, los paneles de sistema e IA se comprimen a un icono; varias pantallas (todas, solo la principal o una selección por monitor),
-barra pequeña o normal, barra arriba, barras verticales (izquierda/derecha, con mods como Windhawk),
-iconos centrados o a la izquierda y escala por monitor. Los paneles se ocultan siempre que la barra
-no se ve (juegos o videos a pantalla completa, barra auto-ocultada).
+<p><img src="docs/images/spectrum-styles.png" width="420" alt="Spectrum styles"></p>
 
-## Requisitos
+**Adapts to the taskbar:** with many apps open, the system and AI panels shrink to an icon; multiple
+displays (all, primary only or a per-monitor selection), small or normal taskbar, top taskbar, vertical
+taskbars (left/right, with mods such as Windhawk), centered or left-aligned icons and per-monitor scaling.
+Panels hide whenever the taskbar is not visible (full-screen games or videos, auto-hide).
 
-- Windows 11 x64 (Windows 10 puede funcionar, sin garantías).
-- Permisos de administrador para instalar: el programa corre con privilegios elevados (tarea
-  programada) porque los sensores de temperatura y PresentMon lo necesitan.
+## Requirements
 
-Funciones que dependen del equipo (si no están disponibles, el panel muestra «—»):
+- Windows 11 x64 (Windows 10 may work, no guarantees).
+- Administrator rights to install: the program runs elevated (scheduled task) because the
+  temperature sensors and PresentMon require it.
 
-| Dato | Necesita |
+Hardware-dependent features (when unavailable, the panel shows "—"):
+
+| Data | Requires |
 |---|---|
-| Uso, temperatura, VRAM, consumo y frecuencia de GPU | GPU **NVIDIA** (NVML, incluido en el driver) |
-| Temperatura de CPU y velocidad de ventiladores | Portátil **Lenovo Legion/LOQ** (WMI `LENOVO_OTHER_METHOD`) |
-| FPS | [PresentMon](https://github.com/GameTechDev/PresentMon) de Intel (el instalador lo descarga) |
-| Consumo de Claude | Sesión iniciada en **Claude Code** en ese usuario |
-| Consumo de Copilot | Un token de GitHub de la cuenta con Copilot: se detecta solo desde **Git Credential Manager**, **GitHub CLI** (`gh auth login`), los plugins oficiales de Copilot o `GH_TOKEN`; si no, menú **IA → Token de GitHub para Copilot…** |
-| Gasto de la API de OpenAI / Anthropic | Una **clave de administrador** de cada plataforma (se pide al agregar el proveedor) |
+| GPU usage and memory (any GPU and NPU) | Windows 10 1709+ GPU counters |
+| GPU temperature, fan and clock | WDDM 2.5+ driver that reports them (recent AMD drivers do; Intel iGPUs usually report no temperature) |
+| GPU power (W) | **NVIDIA** GPU (NVML, included with the driver) |
+| CPU temperature and fan speed | **Lenovo Legion/LOQ** laptop (WMI `LENOVO_OTHER_METHOD`) |
+| FPS | Intel [PresentMon](https://github.com/GameTechDev/PresentMon) (the installer downloads it) |
+| Claude usage | Signed in to **Claude Code** for that user |
+| Copilot usage | A GitHub token of the account with Copilot: detected automatically from **Git Credential Manager**, **GitHub CLI** (`gh auth login`), the official Copilot plugins or `GH_TOKEN`; otherwise, **AI → GitHub token for Copilot…** menu |
+| OpenAI / Anthropic API spend | An **admin key** for each platform (asked for when adding the provider) |
 
-## Instalación
+## Installation
 
-### winget (recomendado)
+### winget (recommended)
 
 ```powershell
 winget install sardilac.TaskbarPanels
 ```
 
-Actualizar: `winget upgrade sardilac.TaskbarPanels` · desinstalar: `winget uninstall sardilac.TaskbarPanels`.
+Updates: `winget upgrade sardilac.TaskbarPanels` · uninstall: `winget uninstall sardilac.TaskbarPanels`.
 
-### Instalador
+### Installer
 
-Descarga `TaskbarPanels-Setup-vX.Y.Z-x64.exe` desde [Releases](../../releases) y ejecútalo (pide UAC).
-Instalación desatendida: `TaskbarPanels-Setup-vX.Y.Z-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`
-(añade `/TASKS=""` para no descargar PresentMon).
+Download `TaskbarPanels-Setup-vX.Y.Z-x64.exe` from [Releases](../../releases) and run it (it asks for UAC).
+Unattended install: `TaskbarPanels-Setup-vX.Y.Z-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`
+(add `/TASKS=""` to skip downloading PresentMon).
 
-El instalador:
-- copia el programa a `C:\Program Files\TaskbarPanels`;
-- descarga PresentMon del release oficial de Intel y **verifica su firma digital** (tarea opcional);
-- registra la tarea programada **TaskbarPanels** (al iniciar sesión, con privilegios elevados, se reinicia
-  sola si falla) para el usuario que instala, y arranca los paneles;
-- agrega el desinstalador a *Configuración → Aplicaciones*.
+The installer:
+- copies the program to `C:\Program Files\TaskbarPanels`;
+- downloads PresentMon from Intel's official release and **verifies its digital signature** (optional task);
+- registers the **TaskbarPanels** scheduled task (at logon, elevated, restarts itself on failure)
+  for the user who installs it, and starts the panels;
+- adds the uninstaller to *Settings → Apps*.
 
-### Zip + PowerShell (alternativa)
+### Zip + PowerShell (alternative)
 
-1. Descarga `TaskbarPanels-vX.Y.Z-x64.zip` desde [Releases](../../releases) y descomprímelo.
-2. Abre PowerShell en esa carpeta y ejecuta:
+1. Download `TaskbarPanels-vX.Y.Z-x64.zip` from [Releases](../../releases) and extract it.
+2. Open PowerShell in that folder and run:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```
 
-   Hace lo mismo que el instalador (usa `-SkipPresentMon` para omitir PresentMon).
+   It does the same as the installer (use `-SkipPresentMon` to skip PresentMon).
 
-> El ejecutable no está firmado; si SmartScreen lo bloquea, elige *Más información → Ejecutar de todas
-> formas* (o marca **Desbloquear** en *Propiedades* del zip antes de descomprimir).
+> The executable is not code-signed; if SmartScreen blocks it, choose *More info → Run anyway*
+> (or tick **Unblock** in the zip's *Properties* before extracting).
 
-### Desinstalar
+### Uninstall
 
-Desde *Configuración → Aplicaciones*, con `winget uninstall sardilac.TaskbarPanels` o (instalación con zip):
+From *Settings → Apps*, with `winget uninstall sardilac.TaskbarPanels`, or (zip install):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Program Files\TaskbarPanels\uninstall.ps1"
-# añade -RemoveSettings para borrar también la configuración
+# add -RemoveSettings to also delete the settings
 ```
 
-La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
+Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 
-## Uso
+## Usage
 
-**Clic derecho** sobre cualquier panel (o sobre su icono en la bandeja) abre el menú:
+**Right-click** any panel (or its tray icon) to open the menu:
 
-- **Mostrar IP pública**, **Copiar IP**, **Actualizar IP**, **Actualizar consumo**
-- **Abrir uso de Claude / Copilot** (páginas web oficiales)
-- **Paneles**: activar o desactivar cada panel
-- **Pantallas**: todas, solo la principal o una selección de monitores
-- **Estilo del espectro**: onda líquida o barras cápsula
-- **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, personalizado por URL JSON), quitar y **token de GitHub para Copilot**
-- **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u oscuro
-- **Proveedor del speed test**: Speedtest.net, Cloudflare, LibreSpeed o GCI
-- **Idioma / Language**: automático (idioma de Windows), español o inglés
-- **Reiniciar posición**, **Salir**
+- **Show public IP**, **Copy IP**, **Refresh IP**, **Refresh usage**
+- **Open Claude / Copilot usage** (official web pages)
+- **Panels**: enable or disable each panel
+- **Displays**: all, primary only or a selection of monitors
+- **Panel format**: system and AI automatic (icon if it does not fit), panel or icon; network as panel or icon
+- **Spectrum style**: liquid wave, capsule bars, segmented LED, mirrored bars or neon line
+- **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, custom JSON URL), remove and **GitHub token for Copilot**
+- **Window background**: frosted glass, clear glass, Windows acrylic, mica or dark
+- **Speed test provider**: Speedtest.net, Cloudflare, LibreSpeed or GCI
+- **Idioma / Language**: automatic (Windows language), Spanish or English
+- **Reset position**, **Exit**
 
-Además: los botones multimedia funcionan sin quitar el foco a la ventana activa, el panel de red
-se puede **arrastrar** en horizontal y al **dejar el cursor** sobre un panel aparece su ventana de detalle.
+Also: the media buttons work without stealing focus from the active window, the network panel
+can be **dragged** horizontally, and **hovering** over a panel opens its detail flyout. In the
+network flyout, the speed-test card has a provider selector (click to switch) and a **Start test** button.
 
-## Configuración
+## Settings
 
-Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 5 s):
+Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 
-| Clave | Valores | Descripción |
+| Key | Values | Description |
 |---|---|---|
-| `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Pantallas donde se muestran los paneles (códigos EDID, ver `MonitorIds`) |
-| `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Selección por panel: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
-| `Panels` | `{ "SystemPanel": false }` | Activar o desactivar paneles |
-| `AiProviders` | lista de proveedores | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "custom", "name", "enabled", "budget" }`; los personalizados añaden `url`, `percentField`, `valueField`, `labelField`. Las claves van al Administrador de credenciales (`TaskbarPanels:<id>`) |
-| `AiPrimary` | `"all"` o un `id` | Proveedor que se muestra en la barra |
-| `SpeedTestProvider` | `ookla` (predeterminado) / `cloudflare` / `librespeed` / `gci` | Proveedor del speed test de la ventana de red |
-| `IpShowAddress` | `true` / `false` | Mostrar la IP pública en el panel de red |
-| `SpectrumStyle` | `"wave"`, `"bars"` | Estilo del espectro de audio (panel y ventana) |
-| `Language` | `"auto"`, `"es"`, `"en"` | Idioma de la interfaz (por defecto, el de Windows: español o, si no, inglés) |
-| `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Fondo de las ventanas flotantes |
-| `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias |
-| `MonitorIds` | (informativo) | Código → nombre de los monitores detectados |
+| `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Displays where the panels are shown (EDID codes, see `MonitorIds`) |
+| `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Per-panel selection: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
+| `Panels` | `{ "SystemPanel": false }` | Enable or disable panels |
+| `PanelStyle` | `{ "SystemPanel" / "UsagePanel": "auto" \| "full" \| "icon", "NetworkPanel": "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit). On vertical taskbars the three are icons unless set to `"full"` |
+| `AiProviders` | list of providers | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "custom", "name", "enabled", "budget" }`; custom ones add `url`, `percentField`, `valueField`, `labelField`. Keys go to Windows Credential Manager (`TaskbarPanels:<id>`) |
+| `AiPrimary` | `"all"` or an `id` | Provider shown on the taskbar |
+| `SpeedTestProvider` | `ookla` (default) / `cloudflare` / `librespeed` / `gci` | Speed-test provider of the network flyout |
+| `IpShowAddress` | `true` / `false` | Show the public IP on the network panel |
+| `SpectrumStyle` | `"wave"`, `"bars"`, `"led"`, `"mirror"`, `"line"` | Audio spectrum style (panel and flyout) |
+| `MediaWidth` | `400`, `480`, `560` (default), `680`, `800` or any value from 320 to 1200 | Media panel width in logical pixels (*Media panel size* menu); it shrinks automatically if there is not enough room |
+| `Language` | `"auto"`, `"es"`, `"en"` | Interface language (default: the Windows language; Spanish, otherwise English) |
+| `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Flyout background |
+| `SecondaryRightMargin` | number (logical px) | Space reserved for the clock on secondary taskbars |
+| `MonitorIds` | (informational) | Code → name of the detected monitors |
 
-Otros archivos en la misma carpeta: `pos.json` (separación del panel de red), `ai_cache.json`
-(último consumo, evita consultas al reiniciar), `flags\` (caché de banderas), `crash.log` (si el programa falla)
-y `debug.log` (solo si existe `debug.flag`).
+Other files in the same folder: `pos.json` (network panel offset), `ai_cache.json` (last usage,
+avoids queries on restart), `flags\` (country flags cache), `crash.log` (if the program crashes)
+and `debug.log` (only if `debug.flag` exists).
 
-## Compilar desde el código
+## Building from source
 
-Requiere [Rust](https://rustup.rs) (toolchain `stable-x86_64-pc-windows-msvc`) y las
-*Build Tools* de Visual Studio con el componente de C++. El instalador necesita además [Inno Setup 6](https://jrsoftware.org/isinfo.php).
+Requires [Rust](https://rustup.rs) (`stable-x86_64-pc-windows-msvc` toolchain) and the Visual Studio
+*Build Tools* with the C++ component. The installer additionally needs [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 ```powershell
 cargo build --release
-.\scripts\install.ps1                 # instala lo recién compilado
-.\scripts\make-screenshots.ps1        # regenera docs/images con datos de ejemplo
-.\scripts\package.ps1                 # genera dist\TaskbarPanels-vX.Y.Z-x64.zip y el instalador Setup .exe (+ .sha256)
+.\scripts\install.ps1                 # installs what was just built
+.\scripts\make-screenshots.ps1        # regenerates docs/images with sample data
+.\scripts\package.ps1                 # builds dist\TaskbarPanels-vX.Y.Z-x64.zip and the Setup .exe (+ .sha256)
 ```
 
-Estructura:
+Layout:
 
 ```
 src/
-  main.rs     ventanas, dibujo de los paneles, menús y ventanas flotantes
-  render.rs   lienzo con alfa por píxel (UpdateLayeredWindow), formas y texto suavizados
-  host.rs     barras de tareas, monitores, orientación, pantalla completa (Win32 + UI Automation)
-  state.rs    estado compartido e IP pública
-  ai.rs       proveedores de IA (Claude, Copilot, OpenAI, Anthropic, personalizados) y credenciales
-  speedtest.rs prueba de velocidad (latencia, bajada y subida): Speedtest.net, Cloudflare, LibreSpeed o GCI
-  flags.rs    bandera del país de la IP pública (flagcdn.com, con caché local)
-  net.rs      red local: adaptador, puerta de enlace, DNS (GetAdaptersAddresses) y ping (IcmpSendEcho)
-  sys.rs      CPU/disco (PDH), GPU (NVML), sensores Lenovo (WMI), FPS (PresentMon), RAM, unidades
-  media.rs    sesión multimedia (WinRT), carátula, línea de tiempo y espectro (WASAPI + FFT)
-  i18n.rs     idioma de la interfaz (español / inglés según Windows)
-  config.rs   config.json
-installer/    script de Inno Setup (TaskbarPanels.iss)
-scripts/      install / uninstall / installer-helper / package / make-screenshots
+  main.rs      windows, panel drawing, menus and flyouts
+  render.rs    per-pixel alpha canvas (UpdateLayeredWindow), anti-aliased shapes and text
+  host.rs      taskbars (panels are child windows of the taskbar), monitors, orientation, taskbar visibility (Win32 + UI Automation)
+  state.rs     shared state and public IP (country confirmed with Cloudflare)
+  ai.rs        AI providers (Claude, Copilot, OpenAI, Anthropic, custom) and credentials
+  speedtest.rs speed test (latency, download, upload): Speedtest.net, Cloudflare, LibreSpeed or GCI
+  flags.rs     country flag of the public IP (flagcdn.com, cached locally)
+  net.rs       local network: adapter, gateway, DNS (GetAdaptersAddresses) and ping (IcmpSendEcho)
+  gpu.rs       every GPU and NPU: DXGI/DXCore, Windows GPU counters, D3DKMT, NVML
+  sys.rs       CPU/disk (PDH), GPU/NPU via gpu.rs, Lenovo sensors (WMI), FPS (PresentMon), RAM, drives
+  media.rs     media session (WinRT), album art, timeline and spectrum (WASAPI + FFT)
+  i18n.rs      interface language (Spanish / English following Windows)
+  config.rs    config.json
+installer/     Inno Setup script (TaskbarPanels.iss)
+scripts/       install / uninstall / installer-helper / package / make-screenshots
 ```
 
-## Publicar un release
+## Publishing a release
 
-El workflow `.github/workflows/release.yml` compila, empaqueta y publica el release al subir un tag;
-después, su job `winget` abre el pull request de actualización en `microsoft/winget-pkgs` (`winget.yml` permite repetirlo a mano).
+`.github/workflows/release.yml` builds, packages and publishes the release when a tag is pushed;
+its `winget` job then opens the update pull request in `microsoft/winget-pkgs` (`winget.yml` lets you re-run it manually).
 
 ```powershell
-# 1. sube la versión en Cargo.toml y anota los cambios en CHANGELOG.md / CHANGELOG.en.md
-git commit -am "v1.0.1"
-git tag v1.0.1
+# 1. bump the version in Cargo.toml and add the changes to CHANGELOG.md / CHANGELOG.es.md
+git commit -am "v1.3.1"
+git tag v1.3.1
 git push origin main --tags
 ```
 
-El release incluye `TaskbarPanels-Setup-vX.Y.Z-x64.exe`, `TaskbarPanels-vX.Y.Z-x64.zip` y sus `.sha256`.
-El workflow de winget necesita el secreto `WINGET_TOKEN` (PAT clásico con el permiso `public_repo`)
-y un fork de `microsoft/winget-pkgs` en la misma cuenta.
+The release contains `TaskbarPanels-Setup-vX.Y.Z-x64.exe`, `TaskbarPanels-vX.Y.Z-x64.zip` and their `.sha256`.
+The winget workflow needs a `WINGET_TOKEN` secret (a classic PAT with the `public_repo` scope)
+and a fork of `microsoft/winget-pkgs` in the same account.
 
-## Privacidad y notas
+## Privacy and notes
 
-- Todo se procesa localmente. Las únicas conexiones de red son:
-  - `ifconfig.co` (y `api.ipify.org` de respaldo) para la IP pública, cada 5 min;
-  - `api.anthropic.com/api/oauth/usage` con el token de Claude Code, cada 3 min;
-  - `api.github.com/copilot_internal/user` con tu token de GitHub, cada 5 min;
-  - si los agregas: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (cada 5 min) y las URL de tus proveedores personalizados (cada 2 min);
-  - `api.github.com` / `github.com` solo durante la instalación, para descargar PresentMon;
-  - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta;
-  - `www.cloudflare.com/cdn-cgi/trace` junto con la consulta de IP, para confirmar el país;
-  - `flagcdn.com` para la bandera del país de la IP, una sola vez por país (queda en caché);
-  - el proveedor de speed test elegido (`speed.cloudflare.com`, servidores de Speedtest.net vía `www.speedtest.net/api/js/servers`, servidores públicos de LibreSpeed vía `librespeed.org/backend-servers` o `speedtest.gci.co.cr`), solo al pulsar **Iniciar prueba** en la ventana de red (hasta ~350 MB).
-- Los endpoints de consumo de Claude y Copilot **no están documentados**: pueden cambiar sin aviso.
-  Si responden con error o límite de consultas (429), se conservan los últimos valores.
-- El programa **no renueva** el token de Claude Code: si caduca, se renueva al volver a abrir Claude Code.
+- Everything is processed locally. The only network connections are:
+  - `ifconfig.co` (and `api.ipify.org` as a fallback) for the public IP, every 5 min;
+  - `www.cloudflare.com/cdn-cgi/trace` along with the IP query, to confirm the country;
+  - `flagcdn.com` for the country flag, once per country (then cached);
+  - `api.anthropic.com/api/oauth/usage` with the Claude Code token, every 3 min;
+  - `api.github.com/copilot_internal/user` with your GitHub token, every 5 min;
+  - if you add them: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (every 5 min) and the URLs of your custom providers (every 2 min);
+  - `api.github.com` / `github.com` only during installation, to download PresentMon;
+  - ICMP ping to the **local gateway**, only while the network flyout is open;
+  - the chosen speed-test provider (`speed.cloudflare.com`, Speedtest.net servers via `www.speedtest.net/api/js/servers`, public LibreSpeed servers via `librespeed.org/backend-servers` or `speedtest.gci.co.cr`), only when you press **Start test** in the network flyout (up to ~350 MB).
+- The Claude and Copilot usage endpoints are **undocumented**: they may change without notice.
+  If they return an error or a rate limit (429), the last values are kept.
+- The program **does not refresh** the Claude Code token: if it expires, it is renewed the next time you open Claude Code.
 
-## Solución de problemas
+## Troubleshooting
 
-| Problema | Qué hacer |
+| Problem | What to do |
 |---|---|
-| No aparecen los paneles | Comprueba la tarea: `Get-ScheduledTask TaskbarPanels`; revisa `%APPDATA%\TaskbarPanels\crash.log` |
-| Faltan en una pantalla | Menú **Pantallas**; se ocultan a propósito cuando la barra no se ve (pantalla completa, auto-ocultar) |
-| FPS siempre «—» | ¿Existe `C:\Program Files\TaskbarPanels\tools\PresentMon.exe`? Reinstala con la tarea de PresentMon |
-| Temperatura de CPU «—» | Solo disponible en portátiles Lenovo compatibles |
-| Consumo de Claude «—» | Abre Claude Code para renovar la sesión; espera hasta 3 min |
-| Copilot «sin credenciales» | No se encontró un token de GitHub: ejecuta `gh auth login` o usa el menú **IA → Token de GitHub para Copilot…** |
-| Copilot «sin acceso a Copilot» | El token es de otra cuenta o sin Copilot: guarda el de la cuenta correcta en **IA → Token de GitHub para Copilot…** |
-| Diagnóstico detallado | Crea `%APPDATA%\TaskbarPanels\debug.flag` y revisa `debug.log` |
+| Panels do not appear | Check the task: `Get-ScheduledTask TaskbarPanels`; look at `%APPDATA%\TaskbarPanels\crash.log` |
+| Missing on a display | **Displays** menu; they hide on purpose when the taskbar is hidden (full screen, auto-hide) |
+| FPS always "—" | Does `C:\Program Files\TaskbarPanels\tools\PresentMon.exe` exist? Reinstall with the PresentMon task |
+| CPU temperature "—" | Only available on supported Lenovo laptops |
+| Claude usage "—" | Open Claude Code to renew the session; wait up to 3 min |
+| Copilot "no credentials" | No GitHub token was found: run `gh auth login` or use **AI → GitHub token for Copilot…** |
+| Copilot "no Copilot access" | The token belongs to another account or has no Copilot: save the right one in **AI → GitHub token for Copilot…** |
+| Detailed diagnostics | Create `%APPDATA%\TaskbarPanels\debug.flag` and check `debug.log` |
 
-## Licencia
+## License
 
-[MIT](LICENSE). PresentMon es © Intel Corporation (licencia MIT) y se descarga de su repositorio oficial.
+[MIT](LICENSE). PresentMon is © Intel Corporation (MIT license) and is downloaded from its official repository.

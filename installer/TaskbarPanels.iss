@@ -66,7 +66,7 @@ Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\taskbar_panels.pdb"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\scripts\{#Helper}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\README.en.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\README.es.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]

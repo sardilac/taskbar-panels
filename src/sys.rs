@@ -1,7 +1,7 @@
-//! Métricas de sistema: CPU (PDH), GPU (NVML), temperaturas/ventiladores Lenovo (WMI)
+//! Métricas de sistema: CPU (PDH), GPU y NPU (gpu.rs), temperaturas/ventiladores Lenovo (WMI)
 //! y FPS de la ventana en primer plano (PresentMon).
 
-use crate::state::st;
+use crate::state::{self, st};
 use crate::util::{exe_dir, hidden_cmd};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use windows::core::{w, BSTR, PCWSTR};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::*;
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Performance::*;
 use windows::core::VARIANT;
 use windows::Win32::System::Wmi::*;
@@ -99,103 +98,6 @@ impl Cpu {
             }
             self.base_mhz * v.Anonymous.doubleValue as f32 / 100.0
         }
-    }
-}
-
-// ---------------------------------------------------------------- GPU (NVML)
-#[repr(C)]
-#[derive(Default)]
-struct NvUtil {
-    gpu: u32,
-    memory: u32,
-}
-
-type FnInit = unsafe extern "C" fn() -> i32;
-type FnHandle = unsafe extern "C" fn(u32, *mut *mut core::ffi::c_void) -> i32;
-type FnUtil = unsafe extern "C" fn(*mut core::ffi::c_void, *mut NvUtil) -> i32;
-type FnTemp = unsafe extern "C" fn(*mut core::ffi::c_void, i32, *mut u32) -> i32;
-type FnName = unsafe extern "C" fn(*mut core::ffi::c_void, *mut u8, u32) -> i32;
-type FnMem = unsafe extern "C" fn(*mut core::ffi::c_void, *mut NvMem) -> i32;
-type FnPower = unsafe extern "C" fn(*mut core::ffi::c_void, *mut u32) -> i32;
-type FnClock = unsafe extern "C" fn(*mut core::ffi::c_void, i32, *mut u32) -> i32;
-
-#[repr(C)]
-#[derive(Default)]
-struct NvMem {
-    total: u64,
-    free: u64,
-    used: u64,
-}
-
-struct Nvml {
-    dev: *mut core::ffi::c_void,
-    util: FnUtil,
-    temp: FnTemp,
-    mem: Option<FnMem>,
-    power: Option<FnPower>,
-    clock: Option<FnClock>,
-    name: String,
-}
-
-impl Nvml {
-    fn new() -> Option<Self> {
-        unsafe {
-            let lib = LoadLibraryW(w!("nvml.dll")).ok()?;
-            let init: FnInit = std::mem::transmute(GetProcAddress(lib, windows::core::s!("nvmlInit_v2"))?);
-            let handle: FnHandle = std::mem::transmute(GetProcAddress(lib, windows::core::s!("nvmlDeviceGetHandleByIndex_v2"))?);
-            let util: FnUtil = std::mem::transmute(GetProcAddress(lib, windows::core::s!("nvmlDeviceGetUtilizationRates"))?);
-            let temp: FnTemp = std::mem::transmute(GetProcAddress(lib, windows::core::s!("nvmlDeviceGetTemperature"))?);
-            if init() != 0 {
-                return None;
-            }
-            let mut dev = std::ptr::null_mut();
-            if handle(0, &mut dev) != 0 {
-                return None;
-            }
-            let opt = |n: windows::core::PCSTR| GetProcAddress(lib, n);
-            let mem: Option<FnMem> = opt(windows::core::s!("nvmlDeviceGetMemoryInfo")).map(|f| std::mem::transmute(f));
-            let power: Option<FnPower> = opt(windows::core::s!("nvmlDeviceGetPowerUsage")).map(|f| std::mem::transmute(f));
-            let clock: Option<FnClock> = opt(windows::core::s!("nvmlDeviceGetClockInfo")).map(|f| std::mem::transmute(f));
-            let mut name = String::new();
-            if let Some(f) = opt(windows::core::s!("nvmlDeviceGetName")) {
-                let f: FnName = std::mem::transmute(f);
-                let mut buf = [0u8; 96];
-                if f(dev, buf.as_mut_ptr(), buf.len() as u32) == 0 {
-                    let n = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-                    name = String::from_utf8_lossy(&buf[..n]).replace("NVIDIA GeForce ", "").to_string();
-                }
-            }
-            Some(Nvml { dev, util, temp, mem, power, clock, name })
-        }
-    }
-    fn usage(&self) -> i32 {
-        let mut u = NvUtil::default();
-        if unsafe { (self.util)(self.dev, &mut u) } != 0 { -1 } else { u.gpu as i32 }
-    }
-    /// (VRAM usada GB, VRAM total GB, consumo W, frecuencia gráfica MHz)
-    fn detail(&self) -> (f32, f32, f32, u32) {
-        unsafe {
-            let mut m = NvMem::default();
-            let (used, total) = match self.mem {
-                Some(f) if f(self.dev, &mut m) == 0 => (m.used as f32 / 1073741824.0, m.total as f32 / 1073741824.0),
-                _ => (0.0, 0.0),
-            };
-            let mut mw = 0u32;
-            let w = match self.power {
-                Some(f) if f(self.dev, &mut mw) == 0 => mw as f32 / 1000.0,
-                _ => 0.0,
-            };
-            let mut mhz = 0u32;
-            let c = match self.clock {
-                Some(f) if f(self.dev, 0, &mut mhz) == 0 => mhz,
-                _ => 0,
-            };
-            (used, total, w, c)
-        }
-    }
-    fn temp(&self) -> i32 {
-        let mut t = 0u32;
-        if unsafe { (self.temp)(self.dev, 0, &mut t) } != 0 { -1 } else { t as i32 }
     }
 }
 
@@ -359,7 +261,7 @@ pub fn spawn_sys_worker() {
     std::thread::spawn(|| unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let cpu = Cpu::new();
-        let nvml = Nvml::new();
+        let mut gpus = crate::gpu::Gpus::new();
         let lenovo = Lenovo::new();
         let map: PresentMap = Arc::new(Mutex::new(HashMap::new()));
         start_presentmon(map.clone());
@@ -367,7 +269,11 @@ pub fn spawn_sys_worker() {
         let mut tick: u64 = 0;
         loop {
             let c = cpu.as_ref().map(|c| c.read()).unwrap_or(-1.0);
-            let (g, mut gt) = nvml.as_ref().map(|n| (n.usage(), n.temp())).unwrap_or((-1, -1));
+            let gr = gpus.read();
+            let gpu_info = gpus.info();
+            let main = gpu_info.iter().position(|i| !i.3);
+            let pr = main.and_then(|i| gr.get(i)).cloned().unwrap_or(crate::gpu::Reading { usage: -1, temp: -1, fan: -1, ..Default::default() });
+            let (g, mut gt) = (pr.usage, pr.temp);
             let lenovo_vals = if tick % 2 == 0 {
                 lenovo.as_ref().map(|l| (l.get(0x0504_0000), l.get(0x0403_0001), l.get(0x0403_0002), l.get(0x0505_0000)))
             } else {
@@ -389,7 +295,7 @@ pub fn spawn_sys_worker() {
             let cpu_mhz = cpu.as_ref().map(|c| c.mhz()).unwrap_or(0.0);
             let (disk_r, disk_w) = cpu.as_ref().map(|c| c.disk()).unwrap_or((0.0, 0.0));
             let drives = if tick % 10 == 0 { Some(scan_drives()) } else { None };
-            let gpu_detail = nvml.as_ref().map(|n| n.detail()).unwrap_or((0.0, 0.0, 0.0, 0));
+            let gpu_detail = (pr.mem_used, pr.mem_total, pr.power, pr.mhz);
             let mut fg_pid = 0u32;
             GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut fg_pid));
             let (fps, app) = if fg_pid == me || fg_pid == 0 { (0, String::new()) } else { fps_of(&map, fg_pid) };
@@ -404,6 +310,8 @@ pub fn spawn_sys_worker() {
                     if gt < 0 {
                         gt = gt2;
                     }
+                } else if lenovo.is_none() {
+                    s.fan_g = pr.fan;
                 }
                 if gt >= 0 || s.gpu_t < 0 {
                     s.gpu_t = gt;
@@ -416,7 +324,7 @@ pub fn spawn_sys_worker() {
                 s.ram_total = ram_total;
                 if s.cpu_name.is_empty() {
                     s.cpu_name = cpu.as_ref().map(|c| c.name.clone()).unwrap_or_default();
-                    s.gpu_name = nvml.as_ref().map(|n| n.name.clone()).unwrap_or_default();
+                    s.gpu_name = main.map(|i| gpu_info[i].0.clone()).unwrap_or_default();
                 }
                 let push = |h: &mut Vec<f32>, v: f32| {
                     if h.is_empty() {
@@ -431,6 +339,23 @@ pub fn spawn_sys_worker() {
                 push(&mut s.hist_cpu_t, ct);
                 push(&mut s.hist_gpu_t, gt);
                 push(&mut s.hist_fps, fp);
+                let (fan_g, gpu_t) = (s.fan_g, s.gpu_t);
+                let changed = s.gpus.len() != gpu_info.len()
+                    || s.gpus.iter().zip(gpu_info.iter()).any(|(g, (n, v, i, npu))| g.name != *n || g.vendor != *v || g.integrated != *i || g.npu != *npu);
+                if changed {
+                    s.gpus = gpu_info.iter().map(|(name, vendor, integrated, npu)| state::GpuStat {
+                        name: name.clone(), vendor: *vendor, integrated: *integrated, npu: *npu, ..Default::default()
+                    }).collect();
+                }
+                for (i, (gs, r)) in s.gpus.iter_mut().zip(gr.iter()).enumerate() {
+                    let principal = Some(i) == main;
+                    gs.usage = r.usage;
+                    gs.temp = if principal { gpu_t } else { r.temp };
+                    gs.fan = if principal && r.fan < 0 { fan_g } else { r.fan };
+                    (gs.mem_used, gs.mem_total, gs.power, gs.mhz) = (r.mem_used, r.mem_total, r.power, r.mhz);
+                    push(&mut gs.hist, r.usage as f32);
+                    push(&mut gs.hist_t, gs.temp as f32);
+                }
                 s.disk_read = disk_r;
                 s.disk_write = disk_w;
                 push(&mut s.hist_disk_r, disk_r as f32);

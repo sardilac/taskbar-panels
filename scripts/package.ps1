@@ -19,7 +19,7 @@ try {
     $stage = Join-Path 'dist' $name
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $stage | Out-Null
-    Copy-Item 'target\release\taskbar-panels.exe', 'scripts\install.ps1', 'scripts\uninstall.ps1', 'README.md', 'README.en.md', 'LICENSE', 'CHANGELOG.md', 'CHANGELOG.en.md' $stage
+    Copy-Item 'target\release\taskbar-panels.exe', 'scripts\install.ps1', 'scripts\uninstall.ps1', 'README.md', 'README.es.md', 'LICENSE', 'CHANGELOG.md', 'CHANGELOG.es.md' $stage
     # el .pdb conserva su nombre: el ejecutable lo busca por ese nombre para que crash.log tenga funciones legibles
     if (Test-Path 'target\release\taskbar_panels.pdb') { Copy-Item 'target\release\taskbar_panels.pdb' $stage }
 

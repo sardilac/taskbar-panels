@@ -66,11 +66,30 @@ pub struct State {
     pub hist_disk_r: Vec<f32>,
     pub hist_disk_w: Vec<f32>,
     pub drives: Vec<Drive>,
+    /// todas las GPU (la principal primero) y después las NPU
+    pub gpus: Vec<GpuStat>,
     // Multimedia
     pub title: String,
     pub artist: String,
     pub media_app: String,
     pub playing: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct GpuStat {
+    pub name: String,
+    pub vendor: u32,
+    pub integrated: bool,
+    pub npu: bool,
+    pub usage: i32,
+    pub temp: i32,
+    pub mem_used: f32,  // GB
+    pub mem_total: f32, // GB
+    pub power: f32,     // W
+    pub mhz: u32,
+    pub fan: i32,
+    pub hist: Vec<f32>,
+    pub hist_t: Vec<f32>,
 }
 
 pub static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {

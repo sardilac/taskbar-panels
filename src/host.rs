@@ -162,10 +162,21 @@ pub fn spawn_icons_watcher() {
         };
         loop {
             let bars = WATCH.lock().unwrap().clone();
+            // si una consulta falla (p. ej. con el menú contextual de la barra abierto, su hilo está en un
+            // bucle modal), se conserva la última posición conocida en lugar de olvidar la barra: si no,
+            // se usaría el cálculo de respaldo y los paneles en modo icono se expandirían
+            let prev = ICONS.lock().unwrap().clone();
             let mut fresh = std::collections::HashMap::new();
             for (hw, vertical) in bars {
-                if let Some(info) = uia_extent(&uia, HWND(hw as *mut _), vertical) {
-                    fresh.insert(hw, info);
+                match uia_extent(&uia, HWND(hw as *mut _), vertical) {
+                    Some(info) => {
+                        fresh.insert(hw, info);
+                    }
+                    None => {
+                        if let Some(old) = prev.get(&hw) {
+                            fresh.insert(hw, *old);
+                        }
+                    }
                 }
             }
             *ICONS.lock().unwrap() = fresh;
@@ -215,7 +226,9 @@ pub fn taskbars(secondary_margin: f32) -> Vec<Taskbar> {
         // borde izquierdo real de los iconos (Inicio incluido): de UI Automation si está disponible
         let start_left = ICONS.lock().unwrap().get(&(hw.0 as isize)).map(|u| u.icons.left)
             .or(start.map(|s| s.left))
-            .filter(|&x| x > r.left)
+            // con los iconos a la izquierda, Inicio puede empezar justo en el borde de la barra (x == r.left):
+            // antes se descartaba y la barra se tomaba como centrada (el multimedia tapaba los iconos)
+            .filter(|&x| x >= r.left && x < r.right)
             .unwrap_or(r.right);
         let left_aligned = (r.right - r.left) >= (r.bottom - r.top) && (start_left - r.left) as f32 <= 40.0 * scale;
         let vertical = (r.bottom - r.top) > (r.right - r.left);

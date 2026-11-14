@@ -59,17 +59,66 @@ impl Drop for Dib {
     }
 }
 
+thread_local! {
+    /// DIB auxiliar compartido por todos los lienzos del hilo para rasterizar texto (blanco sobre
+    /// negro → cobertura). Solo crece hasta el mayor rectángulo de texto dibujado, en lugar de una
+    /// copia a tamaño completo por lienzo.
+    static SCRATCH: std::cell::RefCell<Option<(Dib, i32, i32)>> = const { std::cell::RefCell::new(None) };
+    /// Fuentes GDI en caché por (tamaño, grosor, familia)
+    static FONTS: std::cell::RefCell<std::collections::HashMap<(i32, i32, String), HFONT>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// DIB auxiliar de al menos w×h con ese rectángulo en negro: (dc, píxeles, ancho de fila)
+unsafe fn scratch(w: i32, h: i32) -> Option<(HDC, *const u32, i32)> {
+    SCRATCH.with(|s| {
+        let mut s = s.borrow_mut();
+        let (cw, ch) = s.as_ref().map(|x| (x.1, x.2)).unwrap_or((0, 0));
+        if w > cw || h > ch {
+            let (nw, nh) = (w.max(cw).max(1), h.max(ch).max(1));
+            *s = Some((Dib::new(nw, nh)?, nw, nh));
+        }
+        let (d, sw, _) = s.as_ref()?;
+        let black = CreateSolidBrush(COLORREF(0));
+        FillRect(d.dc, &RECT { left: 0, top: 0, right: w, bottom: h }, black);
+        let _ = DeleteObject(black);
+        Some((d.dc, d.bits as *const u32, *sw))
+    })
+}
+
+/// Fuente GDI en caché (no se borra: el conjunto de tamaños es pequeño; se vacía si pasa de 96)
+unsafe fn font(px: f32, weight: i32, face: &str) -> HFONT {
+    let key = (-(px.max(6.0).round() as i32), weight, face.to_string());
+    FONTS.with(|f| {
+        let mut f = f.borrow_mut();
+        if let Some(h) = f.get(&key) {
+            return *h;
+        }
+        if f.len() > 96 {
+            for (_, h) in f.drain() {
+                let _ = DeleteObject(h);
+            }
+        }
+        let w = wide(face);
+        let h = CreateFontW(
+            key.0, 0, 0, 0, weight, 0, 0, 0,
+            DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32, CLIP_DEFAULT_PRECIS.0 as u32,
+            ANTIALIASED_QUALITY.0 as u32, 0, PCWSTR(w.as_ptr()),
+        );
+        f.insert(key, h);
+        h
+    })
+}
+
 pub struct Surface {
     pub w: i32,
     pub h: i32,
     main: Dib,
-    scratch: Dib, // texto blanco sobre negro → cobertura
     frosted: Option<(String, Vec<u32>)>, // fondo precalculado (estilo, píxeles)
 }
 
 impl Surface {
     pub fn new(w: i32, h: i32) -> Option<Surface> {
-        unsafe { Some(Surface { w, h, main: Dib::new(w, h)?, scratch: Dib::new(w, h)?, frosted: None }) }
+        unsafe { Some(Surface { w, h, main: Dib::new(w, h)?, frosted: None }) }
     }
 
     fn px(&mut self) -> &mut [u32] {
@@ -84,7 +133,8 @@ impl Surface {
     /// Mezcla "over" de un color con opacidad a ∈ [0,1] (premultiplicado)
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, c: Rgb, a: f32) {
-        if a <= 0.002 || x < 0 || y < 0 || x >= self.w || y >= self.h {
+        // `!(a > ..)` descarta también NaN (antes acababa como opacidad 1 y pintaba un bloque sólido)
+        if !(a > 0.002) || x < 0 || y < 0 || x >= self.w || y >= self.h {
             return;
         }
         let a = a.min(1.0);
@@ -170,28 +220,19 @@ impl Surface {
             return;
         }
         unsafe {
-            let dc = self.scratch.dc;
-            let black = CreateSolidBrush(COLORREF(0));
-            FillRect(dc, &r, black);
-            let _ = DeleteObject(black);
-            let f = wide(face);
-            let font = CreateFontW(
-                -(px.max(6.0).round() as i32), 0, 0, 0, weight, 0, 0, 0,
-                DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32, CLIP_DEFAULT_PRECIS.0 as u32,
-                ANTIALIASED_QUALITY.0 as u32, 0, PCWSTR(f.as_ptr()),
-            );
-            let old = SelectObject(dc, font);
+            // se rasteriza en el DIB auxiliar con origen en la esquina del rectángulo
+            let (tw, th) = (r.right - r.left, r.bottom - r.top);
+            let Some((dc, bits, stride)) = scratch(tw, th) else { return };
+            let old = SelectObject(dc, font(px, weight, face));
             SetTextColor(dc, COLORREF(0x00FF_FFFF));
             SetBkMode(dc, TRANSPARENT);
             let mut buf: Vec<u16> = s.encode_utf16().collect();
-            let mut rr = r;
+            let mut rr = RECT { left: 0, top: 0, right: tw, bottom: th };
             DrawTextW(dc, &mut buf, &mut rr, flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             SelectObject(dc, old);
-            let _ = DeleteObject(font);
-            let sc = std::slice::from_raw_parts(self.scratch.bits, (self.w * self.h) as usize);
             for py in r.top..r.bottom {
                 for px in r.left..r.right {
-                    let v = sc[(py * self.w + px) as usize];
+                    let v = *bits.add(((py - r.top) * stride + (px - r.left)) as usize);
                     let cov = (((v >> 8) & 0xFF) as f32 / 255.0).powf(0.85);
                     if cov > 0.0 {
                         self.blend(px, py, c, cov);
@@ -207,19 +248,12 @@ impl Surface {
             return 0.0;
         }
         unsafe {
-            let dc = self.scratch.dc;
-            let f = wide(face);
-            let font = CreateFontW(
-                -(px.max(6.0).round() as i32), 0, 0, 0, weight, 0, 0, 0,
-                DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32, CLIP_DEFAULT_PRECIS.0 as u32,
-                ANTIALIASED_QUALITY.0 as u32, 0, PCWSTR(f.as_ptr()),
-            );
-            let old = SelectObject(dc, font);
+            let Some((dc, _, _)) = scratch(1, 1) else { return 0.0 };
+            let old = SelectObject(dc, font(px, weight, face));
             let buf: Vec<u16> = s.encode_utf16().collect();
             let mut sz = SIZE::default();
             let _ = GetTextExtentPoint32W(dc, &buf, &mut sz);
             SelectObject(dc, old);
-            let _ = DeleteObject(font);
             sz.cx as f32
         }
     }
@@ -349,28 +383,19 @@ impl Surface {
             return;
         }
         unsafe {
-            let dc = self.scratch.dc;
-            let black = CreateSolidBrush(COLORREF(0));
-            FillRect(dc, &RECT { left: c0, top: y0, right: c1, bottom: y1 }, black);
-            let _ = DeleteObject(black);
-            let f = wide(face);
-            let font = CreateFontW(
-                -(px.max(6.0).round() as i32), 0, 0, 0, weight, 0, 0, 0,
-                DEFAULT_CHARSET.0 as u32, OUT_DEFAULT_PRECIS.0 as u32, CLIP_DEFAULT_PRECIS.0 as u32,
-                ANTIALIASED_QUALITY.0 as u32, 0, PCWSTR(f.as_ptr()),
-            );
-            let old = SelectObject(dc, font);
+            // se rasteriza en el DIB auxiliar con origen en (c0, y0): solo la franja visible
+            let Some((dc, bits, stride)) = scratch(c1 - c0, y1 - y0) else { return };
+            let old = SelectObject(dc, font(px, weight, face));
             SetTextColor(dc, COLORREF(0x00FF_FFFF));
             SetBkMode(dc, TRANSPARENT);
             let mut buf: Vec<u16> = s.encode_utf16().collect();
-            let mut rr = RECT { left: x.round() as i32, top: y0, right: (x + tw).round() as i32, bottom: y1 };
+            let xl = x.round() as i32 - c0;
+            let mut rr = RECT { left: xl, top: 0, right: xl + tw.round() as i32, bottom: y1 - y0 };
             DrawTextW(dc, &mut buf, &mut rr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             SelectObject(dc, old);
-            let _ = DeleteObject(font);
-            let sc = std::slice::from_raw_parts(self.scratch.bits, (self.w * self.h) as usize);
             for py in y0..y1 {
                 for px in c0..c1 {
-                    let v = sc[(py * self.w + px) as usize];
+                    let v = *bits.add(((py - y0) * stride + (px - c0)) as usize);
                     let mut cov = (((v >> 8) & 0xFF) as f32 / 255.0).powf(0.85);
                     if cov > 0.0 {
                         let fx = px as f32 + 0.5;
@@ -395,6 +420,25 @@ impl Surface {
                 let qy = (py as f32 + 0.5 - y - hh).abs() - (hh - r);
                 let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
                 self.blend(px, py, c, a * (0.5 - d).clamp(0.0, 1.0));
+            }
+        }
+    }
+
+    /// Rectángulo redondeado con degradado diagonal (de c0 arriba a la izquierda a c1 abajo a la derecha)
+    pub fn round_rect_grad(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c0: Rgb, c1: Rgb, a: f32) {
+        let (hw, hh) = (w / 2.0, h / 2.0);
+        let r = r.min(hw).min(hh);
+        for py in y.floor() as i32..(y + h).ceil() as i32 {
+            for px in x.floor() as i32..(x + w).ceil() as i32 {
+                let (fx, fy) = (px as f32 + 0.5 - x, py as f32 + 0.5 - y);
+                let qx = (fx - hw).abs() - (hw - r);
+                let qy = (fy - hh).abs() - (hh - r);
+                let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
+                let cov = (0.5 - d).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    let t = ((fx / w + fy / h) * 0.5).clamp(0.0, 1.0);
+                    self.blend(px, py, c0.mix(c1, t), a * cov);
+                }
             }
         }
     }
