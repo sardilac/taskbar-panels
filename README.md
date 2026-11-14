@@ -16,7 +16,7 @@ detalle de cada panel, todo en un solo proceso de ~60 MB de RAM y menos del 1 % 
 | **Multimedia** (si hay algo reproduciéndose o en pausa) | Carátula con vinilo animado, botones anterior / reproducir / siguiente con el color del álbum, título desplazable, progreso y espectro de audio (onda líquida o barras cápsula) | Carátula grande, título, artista, álbum, app, tiempos y espectro |
 | **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa y anillo del disco del sistema con lectura/escritura | Modelo de CPU/GPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas |
 | **Consumo de IA** | El proveedor principal con su icono (o un resumen de todos) | Una tarjeta por proveedor: icono, plan, barras, gasto y reinicios (hora local) |
-| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto y totales de la sesión |
+| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto, totales de la sesión y **speed test** bajo demanda (Cloudflare) |
 
 <p>
   <img src="docs/images/popup-sistema.png" width="300" alt="Ventana flotante de sistema">
@@ -136,6 +136,7 @@ src/
   host.rs     barras de tareas, monitores, orientación, pantalla completa (Win32 + UI Automation)
   state.rs    estado compartido e IP pública
   ai.rs       proveedores de IA (Claude, Copilot, OpenAI, Anthropic, personalizados) y credenciales
+  speedtest.rs prueba de velocidad (latencia, bajada y subida) contra speed.cloudflare.com
   net.rs      red local: adaptador, puerta de enlace, DNS (GetAdaptersAddresses) y ping (IcmpSendEcho)
   sys.rs      CPU/disco (PDH), GPU (NVML), sensores Lenovo (WMI), FPS (PresentMon), RAM, unidades
   media.rs    sesión multimedia (WinRT), carátula, línea de tiempo y espectro (WASAPI + FFT)
@@ -165,7 +166,8 @@ El release incluye `TaskbarPanels-vX.Y.Z-x64.zip` y su `.sha256`.
   - `api.github.com/copilot_internal/user` con tu credencial de GitHub, cada 5 min;
   - si los agregas: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (cada 5 min) y las URL de tus proveedores personalizados (cada 2 min);
   - `api.github.com` / `github.com` solo durante la instalación, para descargar PresentMon;
-  - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta.
+  - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta;
+  - `speed.cloudflare.com`, solo al pulsar **Iniciar prueba** en la ventana de red (hasta ~350 MB).
 - Los endpoints de consumo de Claude y Copilot **no están documentados**: pueden cambiar sin aviso.
   Si responden con error o límite de consultas (429), se conservan los últimos valores.
 - El programa **no renueva** el token de Claude Code: si caduca, se renueva al volver a abrir Claude Code.

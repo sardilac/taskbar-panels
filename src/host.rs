@@ -39,6 +39,8 @@ pub struct Taskbar {
     pub tray_top: i32,
     /// vertical: borde inferior del último icono de aplicación
     pub tasks_bottom: i32,
+    /// vertical: borde superior del primer icono (Inicio incluido)
+    pub tasks_top: i32,
 }
 
 fn class_of(h: HWND) -> String {
@@ -246,6 +248,7 @@ pub fn taskbars(secondary_margin: f32) -> Vec<Taskbar> {
         } else {
             r.bottom
         };
+        let tasks_top = if vertical { uia.map(|e| e.top).or(start.map(|s| s.top)).unwrap_or(r.top) } else { r.top };
         let tasks_bottom = if vertical {
             uia.map(|e| e.bottom)
                 .or_else(|| child_rect(hw, "MSTaskListWClass").filter(|t| t.bottom > t.top).map(|t| t.bottom))
@@ -274,6 +277,7 @@ pub fn taskbars(secondary_margin: f32) -> Vec<Taskbar> {
             rect: r,
             tray_top,
             tasks_bottom,
+            tasks_top,
         });
     }
     *WATCH.lock().unwrap() = watch;

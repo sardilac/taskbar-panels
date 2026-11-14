@@ -14,6 +14,7 @@ mod i18n;
 mod media;
 mod net;
 mod render;
+mod speedtest;
 mod state;
 mod sys;
 mod util;
@@ -698,7 +699,7 @@ static AI_POPUP_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 fn popup_h(kind: Kind) -> f32 {
     match kind {
         Kind::System => 352.0 + 8.0 + disk_card_h(st().drives.len()),
-        Kind::Ip => 324.0 + ROUTER_CARD_H + 8.0,
+        Kind::Ip => 324.0 + ROUTER_CARD_H + 8.0 + SPEED_CARD_H + 8.0,
         Kind::Usage => f32::from_bits(AI_POPUP_H.load(std::sync::atomic::Ordering::Relaxed)).max(120.0),
         Kind::Media => 244.0,
     }
@@ -864,6 +865,101 @@ fn paint_router_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, t: f32) 
     ch
 }
 
+// ----------------------------------------------------------------------- prueba de velocidad (ventana de red)
+const SPEED_CARD_H: f32 = 124.0;
+const ACT_SPEEDTEST: u32 = 1;
+
+thread_local! {
+    /// zonas pulsables de la ventana flotante (en coordenadas de la ventana) y la que tiene el cursor
+    static POPUP_HITS: RefCell<Vec<(f32, f32, f32, f32, u32)>> = const { RefCell::new(Vec::new()) };
+    static POPUP_HOVER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn popup_hit(x: f32, y: f32) -> u32 {
+    POPUP_HITS.with(|h| h.borrow().iter().find(|r| x >= r.0 && x < r.2 && y >= r.1 && y < r.3).map(|r| r.4).unwrap_or(0))
+}
+
+fn fmt_mbps(v: f64) -> String {
+    if v >= 1000.0 { format!("{:.2} Gb/s", v / 1000.0) } else if v >= 100.0 { format!("{v:.0} Mb/s") } else { format!("{v:.1} Mb/s") }
+}
+
+/// Card de speed test: medidor circular en vivo, resultados y botón para iniciar
+fn paint_speed_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
+    use speedtest::Phase;
+    let ch = SPEED_CARD_H * sc;
+    card(c, x, y, cw, ch, sc);
+    let s = speedtest::SPEED.lock().unwrap().clone();
+    let busy = matches!(s.phase, Phase::Latency | Phase::Download | Phase::Upload);
+    // ---- medidor (escala logarítmica hasta 2,5 Gb/s)
+    let r = 38.0 * sc;
+    let (gx, gy) = (x + 14.0 * sc + r, y + ch / 2.0);
+    let (val, col) = match s.phase {
+        Phase::Download => (s.live_mbps, DOWN_COL),
+        Phase::Upload => (s.live_mbps, UP_COL),
+        _ => (s.down_mbps.unwrap_or(0.0), DOWN_COL),
+    };
+    let frac = ((1.0 + val).ln() / (1.0 + 2500.0f64).ln()) as f32;
+    c.donut(gx, gy, r, 7.0 * sc, frac, col, col.mix(Rgb::u8(150, 70, 255), 0.6), 3.0 * sc);
+    let num = if val >= 1000.0 { format!("{:.2}", val / 1000.0) } else if val >= 100.0 { format!("{val:.0}") } else if val > 0.0 { format!("{val:.1}") } else { "—".into() };
+    c.text(&num, gx - r, gy - 15.0 * sc, r * 2.0, 22.0 * sc, 17.0 * sc, 700, "Segoe UI", WHITE, DT_CENTER);
+    c.text(if val >= 1000.0 { "Gb/s" } else { "Mb/s" }, gx - r, gy + 6.0 * sc, r * 2.0, 14.0 * sc, 8.5 * sc, 400, "Segoe UI", DIM, DT_CENTER);
+    // ---- cabecera
+    let tx = gx + r + 16.0 * sc;
+    let tw = x + cw - 10.0 * sc - tx;
+    badge(c, tx, y + 18.0 * sc, "SPEED TEST", 8.0 * sc, Rgb::u8(120, 220, 255), sc, 0.0);
+    let meta = match (&s.finished_at, s.colo.is_empty()) {
+        (Some(t), false) => format!("Cloudflare {}  ·  {}", s.colo, util::fmt_local(*t)),
+        (Some(t), true) => util::fmt_local(*t),
+        (None, false) => format!("Cloudflare {}", s.colo),
+        _ => "Cloudflare".into(),
+    };
+    c.text(&meta, tx, y + 10.0 * sc, tw, 16.0 * sc, 8.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
+    // ---- resultados
+    let row = |c: &mut Surface, yy: f32, label: &str, value: String, col: Rgb| {
+        c.text(label, tx, yy, tw, 16.0 * sc, 10.0 * sc, 400, "Segoe UI", Rgb::u8(205, 212, 228), DT_LEFT);
+        c.text(&value, tx, yy, tw, 16.0 * sc, 11.0 * sc, 700, "Segoe UI", col, DT_RIGHT);
+    };
+    let dv = s.down_mbps.map(fmt_mbps).unwrap_or(if s.phase == Phase::Download { fmt_mbps(s.live_mbps) } else { "—".into() });
+    let uv = s.up_mbps.map(fmt_mbps).unwrap_or(if s.phase == Phase::Upload { fmt_mbps(s.live_mbps) } else { "—".into() });
+    row(c, y + 30.0 * sc, &format!("↓  {}", tr("Bajada", "Download")), dv, DOWN_COL.mix(WHITE, 0.3));
+    row(c, y + 47.0 * sc, &format!("↑  {}", tr("Subida", "Upload")), uv, UP_COL.mix(WHITE, 0.3));
+    let pv = match (s.ping_ms, s.jitter_ms) {
+        (Some(p), Some(j)) => format!("{p:.0} ms  ·  jitter {j:.0} ms"),
+        _ => "—".into(),
+    };
+    row(c, y + 64.0 * sc, &format!("◷  {}", tr("Latencia", "Latency")), pv, Rgb::u8(255, 210, 90));
+    // ---- botón o progreso
+    let (bx, by, bw, bh) = (tx, y + ch - 32.0 * sc, tw, 24.0 * sc);
+    if busy {
+        let label = match s.phase {
+            Phase::Latency => tr("Midiendo latencia…", "Measuring latency…"),
+            Phase::Download => tr("Midiendo bajada…", "Measuring download…"),
+            _ => tr("Midiendo subida…", "Measuring upload…"),
+        };
+        c.text(label, bx, by - 2.0 * sc, bw, 14.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        c.capsule_h(bx, bx + bw, by + 17.0 * sc, 2.5 * sc, WHITE, 0.14);
+        c.capsule_h(bx, bx + (bw * s.progress).max(5.0 * sc), by + 17.0 * sc, 2.5 * sc, col, 1.0);
+        POPUP_HITS.with(|h| h.borrow_mut().retain(|r| r.4 != ACT_SPEEDTEST));
+    } else {
+        let hover = POPUP_HOVER.with(|h| h.get()) == ACT_SPEEDTEST;
+        let fill = Rgb::u8(60, 160, 255);
+        c.round_rect(bx, by, bw, bh, bh / 2.0, fill, if hover { 0.95 } else { 0.75 });
+        let label = match s.phase {
+            Phase::Idle => tr("Iniciar prueba", "Start test"),
+            Phase::Error => tr("Reintentar (error)", "Retry (error)"),
+            _ => tr("Probar de nuevo", "Test again"),
+        };
+        c.text(label, bx, by, bw, bh, 10.0 * sc, 600, "Segoe UI", WHITE, DT_CENTER);
+        c.text(tr("usa hasta ~350 MB", "uses up to ~350 MB"), bx, by - 15.0 * sc, bw, 13.0 * sc, 8.0 * sc, 400, "Segoe UI", DIM, DT_RIGHT);
+        POPUP_HITS.with(|h| {
+            let mut h = h.borrow_mut();
+            h.retain(|r| r.4 != ACT_SPEEDTEST);
+            h.push((bx, by, bx + bw, by + bh, ACT_SPEEDTEST));
+        });
+    }
+    ch
+}
+
 // ----------------------------------------------------------------------- Red
 fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32) {
     let mut y = popup_frame(c, w, sc, tr("Red", "Network"), &format!("{}: ↓ {}  ↑ {}", tr("sesión", "session"), fmt_bytes(s.sess_down), fmt_bytes(s.sess_up)));
@@ -882,6 +978,8 @@ fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t:
     y += ih + 8.0 * sc;
     // Router: puerta de enlace, DNS y ping (solo mientras esta ventana está abierta)
     y += paint_router_card(c, x, y, cw, sc, t) + 8.0 * sc;
+    // Speed test (bajo demanda)
+    y += paint_speed_card(c, x, y, cw, sc) + 8.0 * sc;
     // Descarga / subida
     let maxv = s.hist_down.iter().chain(s.hist_up.iter()).fold(8_000.0f32, |m, v| m.max(*v)) * 1.15;
     let ch = (h - y - pad - 8.0 * sc) / 2.0;
@@ -1743,8 +1841,10 @@ unsafe fn place_vertical(panels: &mut [Panel], b: &Taskbar, hide: bool, show_ip:
     if let Some(p) = panels.iter_mut().find(|p| p.kind == Kind::Media && p.tb_key == b.key) {
         p.scale = sc;
         p.vertical = true;
-        let top = b.tasks_bottom + (10.0 * sc) as i32;
         let need = media_v_height(w as f32, sc) as i32;
+        // al inicio (arriba) de la barra si cabe antes de los iconos; si no, bajo los iconos
+        let at_start = b.rect.top + (8.0 * sc) as i32;
+        let top = if at_start + need + (10.0 * sc) as i32 <= b.tasks_top { at_start } else { b.tasks_bottom + (10.0 * sc) as i32 };
         if hide || !media_active || w < 20 || bottom - top < need {
             let _ = ShowWindow(p.hwnd, SW_HIDE); // sin reproducción o sin espacio entre los iconos y los paneles
         } else {
@@ -2457,6 +2557,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 return LRESULT(0);
             }
         }
+        WM_MOUSEMOVE | WM_LBUTTONUP if with_app(|a| a.popup == hwnd).unwrap_or(false) => {
+            // ventana flotante: botones (p. ej. iniciar speed test)
+            let (x, y) = ((lp.0 & 0xFFFF) as i16 as f32, ((lp.0 >> 16) & 0xFFFF) as i16 as f32);
+            let hit = popup_hit(x, y);
+            if msg == WM_LBUTTONUP && hit == ACT_SPEEDTEST {
+                speedtest::start();
+            }
+            if POPUP_HOVER.with(|h| h.replace(hit)) != hit || msg == WM_LBUTTONUP {
+                let _ = InvalidateRect(hwnd, None, FALSE);
+            }
+            return LRESULT(0);
+        }
         WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP => {
             if on_mouse(hwnd, msg, lp) {
                 return LRESULT(0);
@@ -2541,6 +2653,17 @@ fn save_bmp(path: &str, c: &mut Surface, bg: (u8, u8, u8)) {
 
 /// Datos ficticios para las imágenes (IP de documentación RFC 5737, nombres genéricos)
 fn demo_state() {
+    *speedtest::SPEED.lock().unwrap() = speedtest::Speed {
+        phase: speedtest::Phase::Done,
+        progress: 1.0,
+        ping_ms: Some(12.0),
+        jitter_ms: Some(2.0),
+        down_mbps: Some(487.0),
+        up_mbps: Some(212.0),
+        colo: "MIA".into(),
+        finished_at: Some(util::now_epoch() - 120),
+        ..Default::default()
+    };
     let mut s = st();
     let wave = |k: f32, a: f32, base: f32| (0..60).map(|i| base + (i as f32 * k).sin().abs() * a).collect::<Vec<f32>>();
     s.down_bps = 2_350_000.0;

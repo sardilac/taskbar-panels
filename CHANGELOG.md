@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.0
+
+- **Red · speed test**: nueva tarjeta en la ventana de red con un botón para medir la conexión contra `speed.cloudflare.com`: latencia y jitter, bajada y subida (4 conexiones en paralelo, ~8 s por fase) con medidor circular en vivo, barra de progreso y centro de datos de Cloudflare. Solo se ejecuta al pulsar el botón y consume hasta ~350 MB.
+- **Barras verticales**: el panel multimedia se ubica arriba, al inicio de la barra (debajo del botón Inicio si está arriba), y solo baja debajo de los iconos si no cabe.
+
 ## v1.1.0
 
 - **IA con varios proveedores**: Claude, GitHub Copilot, API de OpenAI (gasto del mes frente a presupuesto), API de Anthropic (Admin API) y proveedores personalizados (URL JSON). Cada uno con su icono; se elige el **proveedor principal** que se muestra en la barra (o un resumen de todos). Menú *IA*: proveedor principal, activar/desactivar, agregar (formulario) y quitar. Las claves se guardan en el Administrador de credenciales de Windows.
