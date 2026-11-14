@@ -17,7 +17,7 @@ all in a single process using ~5–10 MB of private memory and less than 1 % of 
 | Panel | On the taskbar | On hover |
 |---|---|---|
 | **Media** (while something is playing or paused) | Album art with an animated vinyl, previous / play / next buttons tinted with the album color, scrolling title, progress and audio spectrum (5 styles: liquid wave, capsule bars, segmented LED, mirrored bars or neon line) | Large album art, title, artist, album, app, times and spectrum |
-| **System** | CPU and GPU (usage + temperature), FPS of the active window and system-drive ring with read/write | CPU model, every GPU (NVIDIA, AMD Radeon, Intel) and the NPU, clocks, fans, VRAM, power, RAM, every drive as a ring and disk I/O charts |
+| **System** | CPU and GPU (usage + temperature), FPS of the active window and system-drive ring (% used) | CPU model, every GPU (NVIDIA, AMD Radeon, Intel) and the NPU, clocks, fans, VRAM, power, RAM, every drive as a ring and disk I/O charts |
 | **AI usage** | The primary provider with its icon (or a summary of all of them) | One card per provider: icon, plan, bars, spend and resets (local time) |
 | **Network** | Upload and download with 60 s charts, public IP with status indicator | ISP, location, **country flag** of the IP, router with gateway, DNS, adapter and **gateway ping** (only while the flyout is open), last-minute peaks, session totals and an on-demand **speed test** (Speedtest.net, Cloudflare, LibreSpeed or GCI) |
 
@@ -121,8 +121,8 @@ Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 - **Idioma / Language**: automatic (Windows language), Spanish or English
 - **Reset position**, **Exit**
 
-Also: the media buttons work without stealing focus from the active window, the network panel
-can be **dragged** horizontally, and **hovering** over a panel opens its detail flyout. In the
+Also: the media buttons work without stealing focus from the active window, the network, AI and
+system panels can each be **dragged** horizontally on their own (they never overlap or leave the bar), and **hovering** over a panel opens its detail flyout. In the
 network flyout, the speed-test card has a provider selector (click to switch) and a **Start test** button.
 
 ## Settings

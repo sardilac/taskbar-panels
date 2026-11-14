@@ -8,7 +8,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Taskbar {
     pub key: isize,
     pub hwnd: HWND,

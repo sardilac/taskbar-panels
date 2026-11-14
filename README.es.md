@@ -16,7 +16,7 @@ detalle de cada panel, todo en un solo proceso de ~5–10 MB de memoria privada 
 | Panel | En la barra | Al pasar el mouse |
 |---|---|---|
 | **Multimedia** (si hay algo reproduciéndose o en pausa) | Carátula con vinilo animado, botones anterior / reproducir / siguiente con el color del álbum, título desplazable, progreso y espectro de audio (5 estilos: onda líquida, barras cápsula, LED segmentado, barras con reflejo o línea neón) | Carátula grande, título, artista, álbum, app, tiempos y espectro |
-| **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa y anillo del disco del sistema con lectura/escritura | Modelo de CPU, todas las GPU (NVIDIA, AMD Radeon, Intel) y la NPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas |
+| **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa y anillo del disco del sistema (% usado) | Modelo de CPU, todas las GPU (NVIDIA, AMD Radeon, Intel) y la NPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas |
 | **Consumo de IA** | El proveedor principal con su icono (o un resumen de todos) | Una tarjeta por proveedor: icono, plan, barras, gasto y reinicios (hora local) |
 | **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto, totales de la sesión y **speed test** bajo demanda (Speedtest.net, Cloudflare, LibreSpeed o GCI) y bandera del país de la IP |
 
@@ -120,8 +120,8 @@ La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 - **Idioma / Language**: automático (idioma de Windows), español o inglés
 - **Reiniciar posición**, **Salir**
 
-Además: los botones multimedia funcionan sin quitar el foco a la ventana activa, el panel de red
-se puede **arrastrar** en horizontal y al **dejar el cursor** sobre un panel aparece su ventana de detalle.
+Además: los botones multimedia funcionan sin quitar el foco a la ventana activa, los paneles de red,
+IA y sistema se pueden **arrastrar** en horizontal, cada uno por separado, sin solaparse nunca y sin salir de la barra, y al **dejar el cursor** sobre un panel aparece su ventana de detalle.
 
 ## Configuración
 

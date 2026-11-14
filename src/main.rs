@@ -73,9 +73,9 @@ impl Kind {
     /// ancho en px lógicos (96 dpi)
     fn width(self) -> f32 {
         match self {
-            Kind::Ip => 112.0,
+            Kind::Ip => 96.0,
             Kind::Usage => 170.0,
-            Kind::System => 236.0, // métricas + anillo del disco del sistema
+            Kind::System => 150.0, // métricas (110) + anillo del disco del sistema
             Kind::Media => media_w(),
         }
     }
@@ -124,13 +124,125 @@ struct Panel {
     last_t: f32,
 }
 
+/// Arrastre en curso de un panel de la derecha
+#[derive(Clone, Copy)]
+struct Drag {
+    slot: usize,
+    x0: i32,
+    off0: i32,
+    max: i32,
+    moved: bool,
+}
+
+/// Índice en `App::offs` de los paneles de la derecha (red, IA, sistema)
+fn chain_slot(k: Kind) -> Option<usize> {
+    match k {
+        Kind::Ip => Some(0),
+        Kind::Usage => Some(1),
+        Kind::System => Some(2),
+        Kind::Media => None,
+    }
+}
+
+/// Coloca los paneles de la derecha según la separación propia de cada uno. Se ordenan por posición
+/// deseada (de derecha a izquierda) y, si dos se tocarían, el de la izquierda se desplaza hasta quedar
+/// a 14 px lógicos del otro: se mueven de forma independiente pero nunca se solapan.
+/// `min_left` es el límite izquierdo (p. ej. el espacio del multimedia): los que lo pasen se empujan
+/// a la derecha, también sin solaparse. Devuelve (tipo, x, ancho) en px físicos, de derecha a izquierda.
+fn chain_layout(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 3], min_left: i32) -> Vec<(Kind, i32, i32)> {
+    let mut v: Vec<(Kind, i32)> = items.to_vec();
+    v.sort_by_key(|(k, _)| chain_slot(*k).map(|i| (offs[i], i)).unwrap_or((0, 0)));
+    let sep = (14.0 * b.scale) as i32;
+    let mut edge = b.right + sep;
+    let mut placed: Vec<(Kind, i32, i32)> = v
+        .into_iter()
+        .map(|(k, w)| {
+            let off = chain_slot(k).map(|i| offs[i]).unwrap_or(0);
+            let xr = (b.right - (off as f32 * b.scale) as i32).min(edge - sep);
+            edge = xr - w;
+            (k, xr - w, w)
+        })
+        .collect();
+    // Límite izquierdo: nunca antes del borde de la barra (las separaciones son globales y pueden venir
+    // de un monitor más ancho, o un vecino puede empujar hasta pasarlo) → se empujan a la derecha
+    let mut floor = min_left.max(b.left);
+    for c in placed.iter_mut().rev() {
+        c.1 = c.1.max(floor);
+        floor = c.1 + c.2 + sep;
+    }
+    // Límite derecho: si el empuje hacia la derecha los sacó por ese lado, se recolocan pegados a él.
+    // Solo podrían pasar del izquierdo si la suma de anchos no cabe en la barra (no es un caso real).
+    let mut ceil = b.right;
+    for c in placed.iter_mut() {
+        c.1 = c.1.min(ceil - c.2);
+        ceil = c.1 - sep;
+    }
+    placed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar(left: i32, right: i32, scale: f32) -> Taskbar {
+        Taskbar { left, right, scale, height: 48, ..Default::default() }
+    }
+
+    /// Comprueba límites de la barra, `min_left` (si cabe) y que no haya solapes
+    fn check(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 3], min_left: i32) {
+        let p = chain_layout(b, items, offs, min_left);
+        assert_eq!(p.len(), items.len());
+        let sep = (14.0 * b.scale) as i32;
+        let total: i32 = items.iter().map(|i| i.1).sum::<i32>() + sep * (items.len() as i32 - 1).max(0);
+        for (k, x, w) in &p {
+            assert!(x + w <= b.right, "{k:?} pasa del borde derecho: {x}+{w} > {} (offs={offs:?})", b.right);
+            assert!(*x >= b.left, "{k:?} pasa del borde izquierdo: {x} < {} (offs={offs:?})", b.left);
+            if min_left > b.left && min_left + total <= b.right {
+                assert!(*x >= min_left, "{k:?} invade el multimedia: {x} < {min_left} (offs={offs:?})");
+            }
+        }
+        let mut s = p.clone();
+        s.sort_by_key(|c| c.1);
+        for w in s.windows(2) {
+            assert!(w[0].1 + w[0].2 + sep <= w[1].1, "solape {:?} / {:?} (offs={offs:?})", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn paneles_dentro_de_la_barra_y_sin_solapes() {
+        for (left, right, scale) in [(0, 1920, 1.0), (1920, 3840, 1.5), (-1280, 0, 1.25), (0, 1366, 2.0)] {
+            let b = bar(left, right, scale);
+            let wid = |k: Kind, compact: bool| ((if compact { compact_width(k) } else { k.width() }) * scale) as i32;
+            let span = ((right - left) as f32 / scale) as i32;
+            let steps: Vec<i32> = (0..=12).map(|i| i * (span + 400) / 12).chain([-50, 0, 8]).collect();
+            for compact in [false, true] {
+                let all = [(Kind::Ip, wid(Kind::Ip, compact)), (Kind::Usage, wid(Kind::Usage, compact)), (Kind::System, wid(Kind::System, compact))];
+                for &a in &steps {
+                    for &u in &steps {
+                        for &s in &steps {
+                            let offs = [a.max(0), u.max(0), s.max(0)];
+                            for min_left in [i32::MIN, left + (400.0 * scale) as i32, right - 50] {
+                                check(&b, &all, &offs, min_left);
+                                check(&b, &all[..2], &offs, min_left);
+                                check(&b, &all[1..], &offs, min_left);
+                                check(&b, &all[2..], &offs, min_left);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct App {
     cfg: Config,
     main: HWND,
     panels: Vec<Panel>,
     bars: Vec<Taskbar>,
-    gap: i32,
-    drag: Option<(i32, i32)>,
+    /// separación de red, IA y sistema respecto al borde derecho (px lógicos, ver `chain_layout`)
+    offs: [i32; 3],
+    drag: Option<Drag>,
     net_prev: Option<(u64, u64, Instant)>,
     taskbar_created: u32,
     t0: Instant,
@@ -267,7 +379,7 @@ fn paint_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32, 
         c.dot(1.0 * sc + icon_w / 2.0, y + row / 2.0, 2.6 * sc, dot_col, 1.0, 2.5 * sc, glow);
     }
     let xt = x_txt.max(1.0 * sc + fw + 3.0 * sc);
-    c.text(&s.ip, xt, y, w - xt, row, px, 400, "Segoe UI", GAINSBORO, DT_LEFT);
+    c.text(&s.ip, xt, y, w - xt, row, px, 400, "Segoe UI", GAINSBORO, DT_LEFT | DT_END_ELLIPSIS);
 }
 
 /// Ancho de la bandera del país de la IP a una altura dada (0 si no hay bandera)
@@ -655,8 +767,8 @@ fn value_unit(c: &mut Surface, x: f32, y: f32, h: f32, num: &str, unit: &str, px
 }
 
 fn paint_system(c: &mut Surface, full_w: f32, h: f32, sc: f32, s: &state::State) {
-    let w = (150.0 * sc).min(full_w);
-    paint_disk_mini(c, w + 4.0 * sc, full_w, h, sc, s);
+    let w = (110.0 * sc).min(full_w);
+    paint_disk_mini(c, w + 4.0 * sc, h, sc, s);
     let row = h / 3.0;
     let px = (10.0 * sc).min((row * 0.72).floor());
     let bpx = (px * 0.72).floor();
@@ -755,8 +867,8 @@ fn system_drive<'a>(s: &'a state::State) -> Option<&'a state::Drive> {
     s.drives.iter().find(|d| d.letter == sysd).or(s.drives.first())
 }
 
-/// Sección del panel: anillo del disco del sistema (% usado) + lectura/escritura
-fn paint_disk_mini(c: &mut Surface, x0: f32, full_w: f32, h: f32, sc: f32, s: &state::State) {
+/// Sección del panel: anillo del disco del sistema (% usado); el detalle está en la ventana flotante
+fn paint_disk_mini(c: &mut Surface, x0: f32, h: f32, sc: f32, s: &state::State) {
     let Some(d) = system_drive(s) else { return };
     let used = (1.0 - d.free / d.total) as f32;
     let dia = (h * 0.80).min(32.0 * sc);
@@ -765,18 +877,6 @@ fn paint_disk_mini(c: &mut Surface, x0: f32, full_w: f32, h: f32, sc: f32, s: &s
     let (c1, c2) = disk_cols(used);
     c.donut(cx, cy, r, (r * 0.30).max(3.0), used, c1, c2, 2.5 * sc);
     c.text(&format!("{:.0}", used * 100.0), cx - r, cy - r, dia, dia, (r * 0.62).floor(), 700, "Segoe UI", WHITE, DT_CENTER);
-    let tx = x0 + dia + 5.0 * sc;
-    let tw = full_w - tx - 2.0 * sc;
-    let row = h / 3.0;
-    let px = (8.5 * sc).min((row * 0.66).floor());
-    // libre abreviado: "1.09T", "512G"
-    let free = if d.free >= 1e12 { format!("{:.2}T", d.free / 1e12) } else { format!("{:.0}G", d.free / 1e9) };
-    c.text(&format!("{}:", d.letter), tx, 0.0, tw, row, px, 700, "Segoe UI", DIM, DT_LEFT);
-    c.text(&free, tx, 0.0, tw, row, px, 600, "Segoe UI", c1.mix(WHITE, 0.35), DT_RIGHT);
-    c.text("R", tx, row, tw, row, px, 700, "Segoe UI", DIM, DT_LEFT);
-    c.text(&rate_short(s.disk_read / 8.0), tx, row, tw, row, px, 600, "Segoe UI", DOWN_COL, DT_RIGHT);
-    c.text("W", tx, 2.0 * row, tw, row, px, 700, "Segoe UI", DIM, DT_LEFT);
-    c.text(&rate_short(s.disk_write / 8.0), tx, 2.0 * row, tw, row, px, 600, "Segoe UI", UP_COL, DT_RIGHT);
 }
 
 /// Alto (px lógicos) de la tarjeta de discos de la ventana flotante
@@ -1536,6 +1636,9 @@ fn neon_at(t: f32) -> Rgb {
 ///  · iconos centrados → a la izquierda, sin pasar del botón Inicio
 ///  · iconos a la izquierda → justo a la derecha del último icono, sin invadir los paneles de la derecha
 /// None si el espacio libre es demasiado estrecho.
+/// ancho mínimo del multimedia en barra horizontal (px lógicos); con menos espacio se oculta
+const MEDIA_MIN_W: f32 = 320.0;
+
 fn media_place(tb: &Taskbar, right_limit: i32) -> Option<(i32, i32)> {
     let sc = tb.scale;
     // margen de 16 px lógicos con los iconos para que nunca se monte sobre ellos
@@ -1543,10 +1646,12 @@ fn media_place(tb: &Taskbar, right_limit: i32) -> Option<(i32, i32)> {
         let x = tb.tasks_right + (16.0 * sc) as i32;
         (x, (right_limit - x) as f32 - 12.0 * sc)
     } else {
+        // tampoco debe pasar de los paneles de la derecha (pueden arrastrarse hasta aquí)
         let x = tb.left + (12.0 * sc) as i32;
-        (x, (tb.start_left - x) as f32 - 16.0 * sc)
+        let lim = ((tb.start_left - x) as f32 - 16.0 * sc).min(right_limit.saturating_sub(x) as f32 - 12.0 * sc);
+        (x, lim)
     };
-    if avail < 320.0 * sc {
+    if avail < MEDIA_MIN_W * sc {
         return None; // sin espacio suficiente: mejor ocultarlo que taparlos
     }
     Some((x, (Kind::Media.width() * sc).min(avail) as i32))
@@ -2352,22 +2457,58 @@ unsafe fn sync(app: &mut App) {
             place_vertical(&mut app.panels, b, &app.cfg, hide, show_ip, usage, media_active);
             continue;
         }
-        let mut offset = app.gap as f32 * b.scale;
         // ¿Choca la cadena de paneles de la derecha con los iconos de apps? → sistema e IA en modo icono
         // (formato elegido por panel: "icon" fijo, "full" fijo, "auto" = icono solo si no cabe)
         let present = |k: Kind| app.panels.iter().any(|p| p.kind == k && p.tb_key == b.key);
         let modes: Vec<(Kind, &str)> = [Kind::Ip, Kind::Usage, Kind::System].iter().map(|k| (*k, panel_mode(&app.cfg, *k))).collect();
         let mode = |k: Kind| modes.iter().find(|m| m.0 == k).map(|m| m.1).unwrap_or("full");
-        let full: f32 = [Kind::Ip, Kind::Usage, Kind::System]
+        let full: Vec<(Kind, i32)> = [Kind::Ip, Kind::Usage, Kind::System]
             .iter()
             .filter(|k| present(**k))
-            .map(|k| ((if mode(*k) == "icon" { compact_width(*k) } else { k.width() }) + 14.0) * b.scale)
-            .sum();
+            .map(|k| (*k, ((if mode(*k) == "icon" { compact_width(*k) } else { k.width() }) * b.scale) as i32))
+            .collect();
+        let full_left = chain_layout(b, &full, &app.offs, i32::MIN).iter().map(|c| c.1).min().unwrap_or(b.right);
         // Con los iconos a la izquierda el multimedia va entre los iconos y estos paneles: en modo
         // automático se reserva su ancho completo (si no, en pantallas pequeñas quedaría comprimido o
         // no cabría y sistema/IA seguirían como panel completo)
         let media_need = if b.left_aligned && media_active && present(Kind::Media) { (Kind::Media.width() + 12.0) * b.scale } else { 0.0 };
-        let compact = (b.right as f32 - offset - full) < b.tasks_right as f32 + 16.0 * b.scale + media_need;
+        let compact = (full_left as f32) < b.tasks_right as f32 + 16.0 * b.scale + media_need;
+        // Espacio del multimedia: los paneles de la derecha no pueden arrastrarse encima de él.
+        // Iconos centrados → ocupa el lado izquierdo de la barra; iconos a la izquierda → va tras los
+        // iconos y se le reserva al menos su ancho mínimo (si no cabe, se oculta como antes)
+        let media_left = if media_active && present(Kind::Media) && !hide {
+            if b.left_aligned {
+                b.tasks_right + ((16.0 + MEDIA_MIN_W + 12.0) * b.scale) as i32
+            } else {
+                media_place(b, i32::MAX).map(|(x, w)| x + w + (14.0 * b.scale) as i32).unwrap_or(i32::MIN)
+            }
+        } else {
+            i32::MIN
+        };
+        // Formato y ancho definitivos de cada panel de la derecha
+        let mut chain: Vec<(Kind, i32)> = Vec::new();
+        for k in [Kind::Ip, Kind::Usage, Kind::System] {
+            let Some(p) = app.panels.iter_mut().find(|p| p.kind == k && p.tb_key == b.key) else { continue };
+            let was = p.compact;
+            p.compact = match mode(k) {
+                "icon" => true,
+                "auto" => compact,
+                _ => false,
+            };
+            if was != p.compact {
+                dbg(&format!(
+                    "barra {}: {k:?} modo icono = {} (iconos hasta x={}, paneles desde x={full_left}, alineada izq={})",
+                    b.monitor_id, p.compact, b.tasks_right, b.left_aligned
+                ));
+            }
+            chain.push((k, ((if p.compact { compact_width(k) } else { k.width() }) * b.scale) as i32));
+        }
+        let mut placed = chain_layout(b, &chain, &app.offs, media_left);
+        if placed.iter().any(|c| c.1 < media_left) {
+            // no caben junto al multimedia: los paneles mantienen su sitio y el multimedia se oculta
+            placed = chain_layout(b, &chain, &app.offs, i32::MIN);
+        }
+        let chain_left = placed.iter().map(|c| c.1).min().unwrap_or(b.right);
         for k in [Kind::Ip, Kind::Usage, Kind::System, Kind::Media] {
             let Some(p) = app.panels.iter_mut().find(|p| p.kind == k && p.tb_key == b.key) else { continue };
             p.scale = b.scale;
@@ -2382,8 +2523,7 @@ unsafe fn sync(app: &mut App) {
             }
             let (x, w) = if k == Kind::Media {
                 // Iconos a la izquierda → a la derecha de los iconos, hasta los paneles de la derecha
-                let right_limit = b.right - offset as i32 + (14.0 * b.scale) as i32;
-                match media_place(b, right_limit) {
+                match media_place(b, chain_left) {
                     Some(xw) => xw,
                     None => {
                         let _ = ShowWindow(p.hwnd, SW_HIDE); // no hay espacio suficiente
@@ -2391,21 +2531,7 @@ unsafe fn sync(app: &mut App) {
                     }
                 }
             } else {
-                let was = p.compact;
-                p.compact = match mode(k) {
-                    "icon" => true,
-                    "auto" => compact,
-                    _ => false,
-                };
-                if was != p.compact {
-                    dbg(&format!(
-                        "barra {}: {k:?} modo icono = {} (iconos hasta x={}, paneles desde x={:.0}, alineada izq={})",
-                        b.monitor_id, p.compact, b.tasks_right, b.right as f32 - offset - full, b.left_aligned
-                    ));
-                }
-                let w = ((if p.compact { compact_width(k) } else { k.width() }) * b.scale) as i32;
-                let x = b.right - offset as i32 - w;
-                offset += w as f32 + 14.0 * b.scale;
+                let Some(&(_, x, w)) = placed.iter().find(|c| c.0 == k) else { continue };
                 (x, w)
             };
             place_panel(p, x, b.top, w, b.height);
@@ -2720,8 +2846,8 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
         let mut save = false;
         match cmd {
             ID_RESET_POS => {
-                app.gap = 8;
-                config::save_gap(8);
+                app.offs = [8; 3];
+                config::save_offsets(&app.offs);
             }
             c if (ID_PANEL_BASE..ID_PANEL_BASE + KINDS.len()).contains(&c) => {
                 let k = KINDS[c - ID_PANEL_BASE];
@@ -2980,27 +3106,50 @@ unsafe fn on_mouse(hwnd: HWND, msg: u32, lp: LPARAM) -> bool {
             2 => media::send(media::Cmd::Next),
             _ => {}
         },
-        (Kind::Ip, WM_LBUTTONDOWN) => {
+        // Red, IA y sistema: arrastrar con el botón izquierdo mueve solo ese panel por la barra
+        (Kind::Ip | Kind::Usage | Kind::System, WM_LBUTTONDOWN) => {
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
-            with_app(|app| app.drag = Some((pt.x, app.gap)));
-            SetCapture(hwnd);
+            let mut r = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut r);
+            let started = with_app(|app| {
+                let p = app.panels.iter().find(|p| p.hwnd == hwnd)?;
+                if p.vertical {
+                    return None;
+                }
+                let b = app.bars.iter().find(|b| b.key == p.tb_key)?;
+                // se parte de la posición real (puede estar desplazado por un vecino)
+                let off0 = (((b.right - r.right) as f32 / sc).round() as i32).max(0);
+                let max = (((b.right - b.left - (r.right - r.left)) as f32 / sc) as i32).max(0);
+                app.drag = Some(Drag { slot: chain_slot(kind)?, x0: pt.x, off0, max, moved: false });
+                Some(())
+            })
+            .flatten()
+            .is_some();
+            if started {
+                SetCapture(hwnd);
+            }
         }
-        (Kind::Ip, WM_MOUSEMOVE) => {
+        (Kind::Ip | Kind::Usage | Kind::System, WM_MOUSEMOVE) => {
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
             with_app(|app| {
-                if let Some((x0, g0)) = app.drag {
-                    app.gap = (g0 - ((pt.x - x0) as f32 / sc) as i32).max(0);
-                    sync(app);
+                let Some(mut d) = app.drag else { return };
+                let dx = pt.x - d.x0;
+                if !d.moved && dx.abs() < 3 {
+                    return; // umbral: un clic sin mover no recoloca nada
                 }
+                d.moved = true;
+                app.drag = Some(d);
+                app.offs[d.slot] = (d.off0 - (dx as f32 / sc) as i32).clamp(0, d.max);
+                sync(app);
             });
         }
-        (Kind::Ip, WM_LBUTTONUP) => {
+        (Kind::Ip | Kind::Usage | Kind::System, WM_LBUTTONUP) => {
             let _ = ReleaseCapture();
             with_app(|app| {
-                if app.drag.take().is_some() {
-                    config::save_gap(app.gap);
+                if app.drag.take().is_some_and(|d| d.moved) {
+                    config::save_offsets(&app.offs);
                 }
             });
         }
@@ -3468,7 +3617,7 @@ fn main() {
                 main,
                 panels: Vec::new(),
                 bars: Vec::new(),
-                gap: config::load_gap(),
+                offs: config::load_offsets(),
                 drag: None,
                 net_prev: None,
                 taskbar_created,

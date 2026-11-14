@@ -2,6 +2,12 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.3.3
+
+- **Network, AI and system panels can be dragged independently**: each one keeps its own position on the taskbar (previously only the network panel could be dragged and it moved all three together). A panel that reaches another one pushes it, never overlapping; dragging past a neighbor swaps their order. No panel leaves the taskbar or covers the media panel's space, which moves aside or hides when there is no room. `pos.json` now stores per-panel `Offsets` (the old `Gap` is migrated automatically) and *Reset position* groups them back on the right.
+- **Narrower system panel** (236 → 150 logical px): more compact CPU/GPU/FPS charts and no drive free-space and read/write text; the ring with the % used remains (details are still in the flyout).
+- **Narrower network panel** (112 → 96 logical px); an IP that doesn't fit is cut with "…".
+
 ## v1.3.2
 
 - **Media panel size**: new *Media panel size* menu (compact 400, medium 480, large 560 — default —, extra large 680, maximum 800 logical px) and `MediaWidth` key for any width from 320 to 1200. The panel still shrinks if the free space is smaller.

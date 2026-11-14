@@ -2,6 +2,12 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.3.3
+
+- **Paneles de red, IA y sistema arrastrables por separado**: cada uno guarda su propia posición en la barra (antes solo se arrastraba el de red y movía los tres juntos). Si un panel llega a otro lo empuja, sin solaparse nunca; al pasar por encima de un vecino intercambian el orden. Ninguno sale de la barra ni invade el espacio del panel multimedia, que se aparta o se oculta si no cabe. `pos.json` guarda ahora `Offsets` por panel (el `Gap` anterior se migra solo) y *Reiniciar posición* los vuelve a juntar a la derecha.
+- **Panel de sistema más estrecho** (236 → 150 px lógicos): gráficas de CPU/GPU/FPS más compactas y sin el texto de espacio libre y lectura/escritura del disco; queda el anillo con el % usado (el detalle sigue en la ventana flotante).
+- **Panel de red más estrecho** (112 → 96 px lógicos); una IP que no quepa se corta con «…».
+
 ## v1.3.2
 
 - **Tamaño del panel multimedia**: nuevo menú *Tamaño del panel multimedia* (compacto 400, mediano 480, grande 560 —predeterminado—, extra grande 680, máximo 800 px lógicos) y clave `MediaWidth` para cualquier ancho de 320 a 1200. El panel se sigue reduciendo si el espacio libre es menor.
