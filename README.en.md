@@ -50,7 +50,7 @@ Hardware-dependent features (when unavailable, the panel shows "—"):
 | CPU temperature and fan speed | **Lenovo Legion/LOQ** laptop (WMI `LENOVO_OTHER_METHOD`) |
 | FPS | Intel [PresentMon](https://github.com/GameTechDev/PresentMon) (the installer downloads it) |
 | Claude usage | Signed in to **Claude Code** for that user |
-| Copilot usage | GitHub credential stored by **Git Credential Manager** with Copilot enabled |
+| Copilot usage | A GitHub token of the account with Copilot: detected automatically from **Git Credential Manager**, **GitHub CLI** (`gh auth login`), the official Copilot plugins or `GH_TOKEN`; otherwise, **AI → GitHub token for Copilot…** menu |
 | OpenAI / Anthropic API spend | An **admin key** for each platform (asked for when adding the provider) |
 
 ## Installation
@@ -110,7 +110,7 @@ Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 - **Panels**: enable or disable each panel
 - **Displays**: all, primary only or a selection of monitors
 - **Spectrum style**: liquid wave or capsule bars
-- **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, custom JSON URL) and remove
+- **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, custom JSON URL), remove and **GitHub token for Copilot**
 - **Window background**: frosted glass, clear glass, Windows acrylic, mica or dark
 - **Speed test provider**: Speedtest.net, Cloudflare, LibreSpeed or GCI
 - **Idioma / Language**: automatic (Windows language), Spanish or English
@@ -198,7 +198,7 @@ and a fork of `microsoft/winget-pkgs` in the same account.
   - `www.cloudflare.com/cdn-cgi/trace` along with the IP query, to confirm the country;
   - `flagcdn.com` for the country flag, once per country (then cached);
   - `api.anthropic.com/api/oauth/usage` with the Claude Code token, every 3 min;
-  - `api.github.com/copilot_internal/user` with your GitHub credential, every 5 min;
+  - `api.github.com/copilot_internal/user` with your GitHub token, every 5 min;
   - if you add them: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (every 5 min) and the URLs of your custom providers (every 2 min);
   - `api.github.com` / `github.com` only during installation, to download PresentMon;
   - ICMP ping to the **local gateway**, only while the network flyout is open;
@@ -216,6 +216,8 @@ and a fork of `microsoft/winget-pkgs` in the same account.
 | FPS always "—" | Does `C:\Program Files\TaskbarPanels\tools\PresentMon.exe` exist? Reinstall with the PresentMon task |
 | CPU temperature "—" | Only available on supported Lenovo laptops |
 | Claude usage "—" | Open Claude Code to renew the session; wait up to 3 min |
+| Copilot "no credentials" | No GitHub token was found: run `gh auth login` or use **AI → GitHub token for Copilot…** |
+| Copilot "no Copilot access" | The token belongs to another account or has no Copilot: save the right one in **AI → GitHub token for Copilot…** |
 | Detailed diagnostics | Create `%APPDATA%\TaskbarPanels\debug.flag` and check `debug.log` |
 
 ## License

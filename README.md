@@ -49,7 +49,7 @@ Funciones que dependen del equipo (si no están disponibles, el panel muestra «
 | Temperatura de CPU y velocidad de ventiladores | Portátil **Lenovo Legion/LOQ** (WMI `LENOVO_OTHER_METHOD`) |
 | FPS | [PresentMon](https://github.com/GameTechDev/PresentMon) de Intel (el instalador lo descarga) |
 | Consumo de Claude | Sesión iniciada en **Claude Code** en ese usuario |
-| Consumo de Copilot | Credencial de GitHub guardada por **Git Credential Manager** con Copilot activo |
+| Consumo de Copilot | Un token de GitHub de la cuenta con Copilot: se detecta solo desde **Git Credential Manager**, **GitHub CLI** (`gh auth login`), los plugins oficiales de Copilot o `GH_TOKEN`; si no, menú **IA → Token de GitHub para Copilot…** |
 | Gasto de la API de OpenAI / Anthropic | Una **clave de administrador** de cada plataforma (se pide al agregar el proveedor) |
 
 ## Instalación
@@ -109,7 +109,7 @@ La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 - **Paneles**: activar o desactivar cada panel
 - **Pantallas**: todas, solo la principal o una selección de monitores
 - **Estilo del espectro**: onda líquida o barras cápsula
-- **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, personalizado por URL JSON) y quitar
+- **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, personalizado por URL JSON), quitar y **token de GitHub para Copilot**
 - **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u oscuro
 - **Proveedor del speed test**: Speedtest.net, Cloudflare, LibreSpeed o GCI
 - **Idioma / Language**: automático (idioma de Windows), español o inglés
@@ -194,7 +194,7 @@ y un fork de `microsoft/winget-pkgs` en la misma cuenta.
 - Todo se procesa localmente. Las únicas conexiones de red son:
   - `ifconfig.co` (y `api.ipify.org` de respaldo) para la IP pública, cada 5 min;
   - `api.anthropic.com/api/oauth/usage` con el token de Claude Code, cada 3 min;
-  - `api.github.com/copilot_internal/user` con tu credencial de GitHub, cada 5 min;
+  - `api.github.com/copilot_internal/user` con tu token de GitHub, cada 5 min;
   - si los agregas: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (cada 5 min) y las URL de tus proveedores personalizados (cada 2 min);
   - `api.github.com` / `github.com` solo durante la instalación, para descargar PresentMon;
   - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta;
@@ -214,6 +214,8 @@ y un fork de `microsoft/winget-pkgs` en la misma cuenta.
 | FPS siempre «—» | ¿Existe `C:\Program Files\TaskbarPanels\tools\PresentMon.exe`? Reinstala con la tarea de PresentMon |
 | Temperatura de CPU «—» | Solo disponible en portátiles Lenovo compatibles |
 | Consumo de Claude «—» | Abre Claude Code para renovar la sesión; espera hasta 3 min |
+| Copilot «sin credenciales» | No se encontró un token de GitHub: ejecuta `gh auth login` o usa el menú **IA → Token de GitHub para Copilot…** |
+| Copilot «sin acceso a Copilot» | El token es de otra cuenta o sin Copilot: guarda el de la cuenta correcta en **IA → Token de GitHub para Copilot…** |
 | Diagnóstico detallado | Crea `%APPDATA%\TaskbarPanels\debug.flag` y revisa `debug.log` |
 
 ## Licencia

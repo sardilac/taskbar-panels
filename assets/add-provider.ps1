@@ -1,7 +1,7 @@
 <#
   Formulario para agregar un proveedor de IA a Taskbar Panels.
   Lo lanza taskbar-panels.exe; escribe en la salida estándar un JSON con los datos
-  (o nada si se cancela). Tipos: openai, anthropic_api, custom.
+  (o nada si se cancela). Tipos: openai, anthropic_api, custom, copilot (solo el token).
 #>
 param([string]$Kind = 'openai', [string]$Lang = 'es')
 
@@ -14,11 +14,13 @@ $titles = @{
     openai        = (T 'Agregar API de OpenAI' 'Add OpenAI API')
     anthropic_api = (T 'Agregar API de Anthropic' 'Add Anthropic API')
     custom        = (T 'Agregar proveedor personalizado' 'Add custom provider')
+    copilot       = (T 'Token de GitHub para Copilot' 'GitHub token for Copilot')
 }
 $notes = @{
     openai        = (T 'Usa una clave de administrador (Admin key) de platform.openai.com. Se mide el gasto del mes frente al presupuesto.' 'Use an Admin key from platform.openai.com. Shows this month''s spend against your budget.')
     anthropic_api = (T 'Usa una clave de la Admin API de console.anthropic.com. Se mide el gasto del mes frente al presupuesto.' 'Use an Admin API key from console.anthropic.com. Shows this month''s spend against your budget.')
     custom        = (T 'URL que devuelve un JSON. Indica la ruta del campo con el porcentaje (p. ej. usage.percent).' 'A URL returning JSON. Set the path of the percentage field (e.g. usage.percent).')
+    copilot       = (T 'Solo hace falta si no se detecta solo (Git Credential Manager, GitHub CLI o plugins de Copilot). Usa el token de "gh auth token" de la cuenta con Copilot. Se guarda en el Administrador de credenciales; deja el campo vacío para borrarlo.' 'Only needed if it is not detected automatically (Git Credential Manager, GitHub CLI or Copilot plugins). Use the "gh auth token" token of the account with Copilot. It is stored in Windows Credential Manager; leave it empty to remove it.')
 }
 
 $form = New-Object System.Windows.Forms.Form
@@ -50,6 +52,9 @@ function Add-Field($key, $label, $default = '', [switch]$Secret) {
 }
 
 switch ($Kind) {
+    'copilot' {
+        Add-Field 'key' (T 'Token de GitHub' 'GitHub token') -Secret
+    }
     'openai' {
         Add-Field 'name' (T 'Nombre' 'Name') 'OpenAI API'
         Add-Field 'key' (T 'Clave de administrador' 'Admin key') -Secret
@@ -72,7 +77,7 @@ switch ($Kind) {
 $buttons = New-Object System.Windows.Forms.FlowLayoutPanel
 $buttons.FlowDirection = 'RightToLeft'; $buttons.AutoSize = $true; $buttons.Dock = 'Fill'
 $buttons.Margin = New-Object System.Windows.Forms.Padding(0, 14, 0, 0)
-$ok = New-Object System.Windows.Forms.Button; $ok.Text = (T 'Agregar' 'Add'); $ok.AutoSize = $true; $ok.DialogResult = 'OK'
+$ok = New-Object System.Windows.Forms.Button; $ok.Text = if ($Kind -eq 'copilot') { (T 'Guardar' 'Save') } else { (T 'Agregar' 'Add') }; $ok.AutoSize = $true; $ok.DialogResult = 'OK'
 $cancel = New-Object System.Windows.Forms.Button; $cancel.Text = (T 'Cancelar' 'Cancel'); $cancel.AutoSize = $true; $cancel.DialogResult = 'Cancel'
 $buttons.Controls.Add($ok); $buttons.Controls.Add($cancel)
 $panel.Controls.Add($buttons); $panel.SetColumnSpan($buttons, 2)

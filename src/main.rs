@@ -355,7 +355,8 @@ fn status_text(s: &str) -> &'static str {
         "no_key" => tr("falta la clave", "missing key"),
         "bad_key" => tr("clave no válida o sin permisos", "invalid key or no permission"),
         "no_url" => tr("falta la URL", "missing URL"),
-        "no_data" => tr("sin datos", "no data"),
+        "no_data" => tr("sin datos (sin conexión)", "no data (offline)"),
+        "no_copilot" => tr("el token de GitHub no tiene acceso a Copilot", "GitHub token has no Copilot access"),
         "" => "",
         _ => tr("consultando…", "checking…"),
     }
@@ -2186,6 +2187,7 @@ const ID_AI_TOGGLE_BASE: usize = 130;
 const ID_AI_ADD_OPENAI: usize = 160;
 const ID_AI_ADD_ANTHROPIC: usize = 161;
 const ID_AI_ADD_CUSTOM: usize = 162;
+const ID_AI_COPILOT_TOKEN: usize = 164;
 const ID_AI_REMOVE_BASE: usize = 170;
 const ID_SHOW_IP: usize = 60;
 const ID_POPUP_STYLE_BASE: usize = 80; // +índice de POPUP_STYLES
@@ -2277,6 +2279,7 @@ unsafe fn show_menu(main: HWND) {
             append(sub, ID_AI_ADD_CUSTOM, tr("Personalizado (URL JSON)…", "Custom (JSON URL)…"), false);
             append_sub(ai_menu, sub, tr("Agregar proveedor", "Add provider"));
         }
+        append(ai_menu, ID_AI_COPILOT_TOKEN, tr("Token de GitHub para Copilot…", "GitHub token for Copilot…"), false);
         let removable: Vec<(usize, &ai::ProviderCfg)> = ai_list.iter().enumerate().filter(|(_, p)| !matches!(p.kind.as_str(), "claude" | "copilot")).collect();
         if !removable.is_empty() {
             if let Ok(sub) = CreatePopupMenu() {
@@ -2338,6 +2341,7 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
         ID_AI_ADD_OPENAI => ai::add_provider_async("openai"),
         ID_AI_ADD_ANTHROPIC => ai::add_provider_async("anthropic_api"),
         ID_AI_ADD_CUSTOM => ai::add_provider_async("custom"),
+        ID_AI_COPILOT_TOKEN => ai::set_copilot_token_async(),
         ID_OPEN_CLAUDE => util::open_url("https://claude.ai/settings/usage"),
         ID_OPEN_COPILOT => util::open_url("https://github.com/settings/copilot"),
         ID_EXIT => {

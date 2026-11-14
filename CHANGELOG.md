@@ -2,6 +2,10 @@
 
 **Español** · [English](CHANGELOG.en.md)
 
+## v1.3.1
+
+- **Copilot**: el token de GitHub se busca en varias fuentes (token guardado a mano, `GH_TOKEN`/`GITHUB_TOKEN`, plugins oficiales de Copilot, GitHub CLI y Git Credential Manager) y se usa el primero con acceso a Copilot. Nuevo menú **IA → Token de GitHub para Copilot…** para guardarlo a mano (Administrador de credenciales). El estado distingue «sin credenciales», «el token no tiene acceso a Copilot» y «sin conexión».
+
 ## v1.3.0
 
 - **Instalador** `TaskbarPanels-Setup-vX.Y.Z-x64.exe` (Inno Setup): instala en *Archivos de programa*, descarga y verifica PresentMon (tarea opcional), registra la tarea programada y agrega el desinstalador a *Configuración → Aplicaciones*. Admite instalación silenciosa (`/VERYSILENT`).

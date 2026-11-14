@@ -244,24 +244,65 @@ fn fetch_claude(a: &ureq::Agent, prev: &Provider) -> Provider {
 }
 
 // ---------------------------------------------------------------- GitHub Copilot
-fn github_token() -> Option<String> {
-    let mut child = hidden_cmd("git")
-        .args(["credential", "fill"])
+/// Credencial manual del token de GitHub para Copilot (Administrador de credenciales)
+pub const COPILOT_TOKEN_ID: &str = "copilot-token";
+
+/// Ejecuta un comando oculto y devuelve su salida estándar (si terminó bien)
+fn cmd_output(exe: &str, args: &[&str], input: Option<&[u8]>) -> Option<String> {
+    let mut child = hidden_cmd(exe)
+        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
-        .stdin(Stdio::piped())
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    child.stdin.take()?.write_all(b"protocol=https\nhost=github.com\n\n").ok()?;
+    if let Some(i) = input {
+        child.stdin.take()?.write_all(i).ok()?;
+    }
     let out = child.wait_with_output().ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|l| l.strip_prefix("password=").map(|p| p.trim().to_string()))
-        .filter(|t| !t.is_empty())
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Tokens de GitHub candidatos, en orden de preferencia (fuente, token):
+/// 1. el que el usuario guardó a mano (menú IA → Token de GitHub para Copilot…)
+/// 2. variables GH_TOKEN / GITHUB_TOKEN
+/// 3. plugins oficiales de Copilot (Visual Studio, JetBrains, Neovim…): %LOCALAPPDATA%\github-copilot\apps.json / hosts.json
+/// 4. GitHub CLI (`gh auth token`)
+/// 5. Git Credential Manager (`git credential fill`)
+fn github_tokens() -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    let mut push = |src: &'static str, t: Option<String>| {
+        if let Some(t) = t.map(|t| t.trim().to_string()).filter(|t| t.len() >= 20 && !t.contains(char::is_whitespace)) {
+            if !out.iter().any(|(_, x)| *x == t) {
+                out.push((src, t));
+            }
+        }
+    };
+    push("manual", cred_read(COPILOT_TOKEN_ID));
+    push("env", std::env::var("GH_TOKEN").ok());
+    push("env", std::env::var("GITHUB_TOKEN").ok());
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("github-copilot")) {
+        for f in ["apps.json", "hosts.json"] {
+            let Ok(s) = std::fs::read_to_string(dir.join(f)) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&s) else { continue };
+            for (k, e) in v.as_object().into_iter().flatten() {
+                if k.starts_with("github.com") {
+                    push("copilot-plugin", e["oauth_token"].as_str().map(String::from));
+                }
+            }
+        }
+    }
+    push("gh", cmd_output("gh", &["auth", "token", "--hostname", "github.com"], None));
+    push(
+        "git",
+        cmd_output("git", &["credential", "fill"], Some(b"protocol=https\nhost=github.com\n\n"))
+            .and_then(|o| o.lines().find_map(|l| l.strip_prefix("password=").map(|p| p.to_string()))),
+    );
+    out
+}
 fn compact(x: f64) -> String {
     let (v, s) = if x >= 1e6 { (x / 1e6, "M") } else if x >= 1e3 { (x / 1e3, "k") } else { (x, "") };
     let t = if v >= 100.0 || (v - v.round()).abs() < 0.05 { format!("{v:.0}") } else { format!("{v:.1}") };
@@ -270,26 +311,49 @@ fn compact(x: f64) -> String {
 
 fn fetch_copilot(a: &ureq::Agent, prev: &Provider, token: &mut Option<String>) -> Provider {
     let mut p = Provider { kind: "copilot".into(), ..prev.clone() };
-    let call = |t: &str| {
-        a.get("https://api.github.com/copilot_internal/user")
-            .set("Authorization", &format!("token {t}"))
-            .call()
-            .ok()
-            .and_then(|r| r.into_json::<Value>().ok())
+    enum R {
+        Ok(Value),
+        Denied,
+        Net,
+    }
+    let call = |t: &str| match a.get("https://api.github.com/copilot_internal/user").set("Authorization", &format!("token {t}")).call() {
+        Ok(r) => r.into_json::<Value>().map(R::Ok).unwrap_or(R::Net),
+        Err(ureq::Error::Status(401 | 403 | 404, _)) => R::Denied,
+        Err(_) => R::Net,
     };
-    if token.is_none() {
-        *token = github_token();
+    // primero el token que funcionó la última vez; si falla, se prueban todas las fuentes
+    let mut res = token.as_deref().map(call);
+    if !matches!(res, Some(R::Ok(_))) {
+        let cands = github_tokens();
+        if cands.is_empty() {
+            *token = None;
+            p.status = "no_credentials".into();
+            return p;
+        }
+        let mut denied = false;
+        res = None;
+        for (_, t) in cands {
+            match call(&t) {
+                R::Ok(v) => {
+                    *token = Some(t);
+                    res = Some(R::Ok(v));
+                    break;
+                }
+                R::Denied => denied = true,
+                R::Net => {}
+            }
+        }
+        if res.is_none() {
+            *token = None;
+            // con algún rechazo explícito: el token no da acceso a Copilot; si no, fallo de red
+            p.status = if denied { "no_copilot" } else { "no_data" }.into();
+            return p;
+        }
     }
-    let mut c = token.as_deref().and_then(call);
-    if c.is_none() {
-        *token = github_token();
-        c = token.as_deref().and_then(call);
-    }
-    let Some(c) = c else {
-        p.status = "no_credentials".into();
+    let Some(R::Ok(c)) = res else {
+        p.status = "no_data".into();
         return p;
-    };
-    let q = &c["quota_snapshots"]["premium_interactions"];
+    };    let q = &c["quota_snapshots"]["premium_interactions"];
     let unlimited = q["unlimited"].as_bool().unwrap_or(false);
     let used = 100.0 - q["percent_remaining"].as_f64().unwrap_or(100.0);
     p.plan = c["copilot_plan"].as_str().unwrap_or_default().to_string();
@@ -551,25 +615,41 @@ const ADD_FORM: &str = include_str!("../assets/add-provider.ps1");
 
 /// Abre el formulario en un hilo aparte; al aceptar guarda la clave en el Administrador de
 /// credenciales, añade el proveedor a config.json y fuerza una consulta
+/// Muestra el formulario (bloqueante) y devuelve lo introducido; None si se cancela
+fn run_form(kind: &str) -> Option<Value> {
+    let script = std::env::temp_dir().join("taskbar-panels-add-provider.ps1");
+    std::fs::write(&script, ADD_FORM.as_bytes()).ok()?;
+    let lang = if crate::i18n::es() { "es" } else { "en" };
+    let out = hidden_cmd("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File"])
+        .arg(&script)
+        .args(["-Kind", kind, "-Lang", lang])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let _ = std::fs::remove_file(&script);
+    let text = String::from_utf8_lossy(&out.ok()?.stdout).into_owned();
+    let line = text.lines().rev().find(|l| l.trim_start().starts_with('{'))?.to_string(); // sin JSON = cancelado
+    serde_json::from_str::<Value>(&line).ok()
+}
+
+/// Pide el token de GitHub para Copilot y lo guarda (vacío = borrarlo); fuerza una consulta
+pub fn set_copilot_token_async() {
+    std::thread::spawn(|| {
+        let Some(r) = run_form("copilot") else { return };
+        match r["key"].as_str().map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => {
+                cred_write(COPILOT_TOKEN_ID, k);
+            }
+            None => cred_delete(COPILOT_TOKEN_ID),
+        }
+        refresh();
+    });
+}
+
 pub fn add_provider_async(kind: &'static str) {
     std::thread::spawn(move || {
-        let script = std::env::temp_dir().join("taskbar-panels-add-provider.ps1");
-        if std::fs::write(&script, ADD_FORM.as_bytes()).is_err() {
-            return;
-        }
-        let lang = if crate::i18n::es() { "es" } else { "en" };
-        let out = hidden_cmd("powershell.exe")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File"])
-            .arg(&script)
-            .args(["-Kind", kind, "-Lang", lang])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output();
-        let _ = std::fs::remove_file(&script);
-        let Ok(out) = out else { return };
-        let text = String::from_utf8_lossy(&out.stdout);
-        let Some(line) = text.lines().rev().find(|l| l.trim_start().starts_with('{')) else { return }; // cancelado
-        let Ok(r) = serde_json::from_str::<Value>(line) else { return };
+        let Some(r) = run_form(kind) else { return };
 
         let id = format!("{kind}-{}", now_epoch() % 1_000_000);
         if let Some(k) = r["key"].as_str().filter(|k| !k.is_empty()) {
