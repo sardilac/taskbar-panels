@@ -1,4 +1,4 @@
-# Comprueba que el proyecto compila en cada push y pull request
+# Comprueba que el proyecto compila y pasa los tests en cada push y pull request
 name: CI
 
 on:
@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Instalar Rust estable
         shell: pwsh
         run: |
@@ -19,3 +19,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Compilar
         run: cargo build --release
+      - name: Tests
+        run: cargo test --release

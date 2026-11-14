@@ -14,7 +14,7 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Instalar Rust estable
         shell: pwsh
@@ -40,7 +40,7 @@ jobs:
         run: if (-not (Get-ChildItem dist -Filter 'TaskbarPanels-Setup-*.exe')) { throw 'no se generó el instalador' }
 
       - name: Publicar el release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.zip
