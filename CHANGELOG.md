@@ -1,5 +1,13 @@
 # Changelog
 
+**Español** · [English](CHANGELOG.en.md)
+
+## v1.3.0
+
+- **Instalador** `TaskbarPanels-Setup-vX.Y.Z-x64.exe` (Inno Setup): instala en *Archivos de programa*, descarga y verifica PresentMon (tarea opcional), registra la tarea programada y agrega el desinstalador a *Configuración → Aplicaciones*. Admite instalación silenciosa (`/VERYSILENT`).
+- **winget**: disponible como `sardilac.TaskbarPanels`; cada release abre automáticamente la actualización en `microsoft/winget-pkgs`.
+- **Documentación en inglés** (`README.en.md`, `CHANGELOG.en.md`).
+
 ## v1.2.1
 
 - **Bandera del país** de la IP pública a la izquierda de la IP (ventana de red y fila de IP del panel). Se descarga una vez por país desde `flagcdn.com` y queda en caché en `%APPDATA%\TaskbarPanels\flags`. El país se toma de Cloudflare (`cdn-cgi/trace`) cuando no coincide con el de ifconfig.co, que puede ubicar mal bloques de IP anunciados desde otro país.

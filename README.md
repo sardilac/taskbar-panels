@@ -1,5 +1,7 @@
 # Taskbar Panels
 
+**Español** · [English](README.en.md)
+
 Paneles modernos y ligeros para la barra de tareas de **Windows 11**, escritos en **Rust**:
 red, consumo de IA (Claude / GitHub Copilot), sistema (CPU, GPU, FPS, discos) y multimedia.
 Transparencia real, animaciones a 60 fps y ventanas flotantes de vidrio esmerilado con el
@@ -30,8 +32,8 @@ detalle de cada panel, todo en un solo proceso de ~60 MB de RAM y menos del 1 % 
 
 **Se adapta a la barra:** si hay muchas apps abiertas, los paneles de sistema e IA se comprimen a un icono; varias pantallas (todas, solo la principal o una selección por monitor),
 barra pequeña o normal, barra arriba, barras verticales (izquierda/derecha, con mods como Windhawk),
-iconos centrados o a la izquierda y escala por monitor. Los paneles se ocultan con juegos o
-videos a pantalla completa.
+iconos centrados o a la izquierda y escala por monitor. Los paneles se ocultan siempre que la barra
+no se ve (juegos o videos a pantalla completa, barra auto-ocultada).
 
 ## Requisitos
 
@@ -52,6 +54,29 @@ Funciones que dependen del equipo (si no están disponibles, el panel muestra «
 
 ## Instalación
 
+### winget (recomendado)
+
+```powershell
+winget install sardilac.TaskbarPanels
+```
+
+Actualizar: `winget upgrade sardilac.TaskbarPanels` · desinstalar: `winget uninstall sardilac.TaskbarPanels`.
+
+### Instalador
+
+Descarga `TaskbarPanels-Setup-vX.Y.Z-x64.exe` desde [Releases](../../releases) y ejecútalo (pide UAC).
+Instalación desatendida: `TaskbarPanels-Setup-vX.Y.Z-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`
+(añade `/TASKS=""` para no descargar PresentMon).
+
+El instalador:
+- copia el programa a `C:\Program Files\TaskbarPanels`;
+- descarga PresentMon del release oficial de Intel y **verifica su firma digital** (tarea opcional);
+- registra la tarea programada **TaskbarPanels** (al iniciar sesión, con privilegios elevados, se reinicia
+  sola si falla) para el usuario que instala, y arranca los paneles;
+- agrega el desinstalador a *Configuración → Aplicaciones*.
+
+### Zip + PowerShell (alternativa)
+
 1. Descarga `TaskbarPanels-vX.Y.Z-x64.zip` desde [Releases](../../releases) y descomprímelo.
 2. Abre PowerShell en esa carpeta y ejecuta:
 
@@ -59,22 +84,21 @@ Funciones que dependen del equipo (si no están disponibles, el panel muestra «
    powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```
 
-   Se abrirá el aviso de UAC. El instalador:
-   - copia el programa a `C:\Program Files\TaskbarPanels`;
-   - descarga PresentMon del release oficial de Intel y **verifica su firma digital**
-     (usa `-SkipPresentMon` para omitirlo);
-   - registra la tarea programada **TaskbarPanels** (al iniciar sesión, se reinicia sola si falla)
-     y arranca los paneles.
+   Hace lo mismo que el instalador (usa `-SkipPresentMon` para omitir PresentMon).
 
-> El ejecutable no está firmado; si SmartScreen lo bloquea, en *Propiedades* del zip marca
-> **Desbloquear** antes de descomprimir.
+> El ejecutable no está firmado; si SmartScreen lo bloquea, elige *Más información → Ejecutar de todas
+> formas* (o marca **Desbloquear** en *Propiedades* del zip antes de descomprimir).
 
 ### Desinstalar
+
+Desde *Configuración → Aplicaciones*, con `winget uninstall sardilac.TaskbarPanels` o (instalación con zip):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Program Files\TaskbarPanels\uninstall.ps1"
 # añade -RemoveSettings para borrar también la configuración
 ```
+
+La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 
 ## Uso
 
@@ -87,6 +111,7 @@ powershell -ExecutionPolicy Bypass -File "C:\Program Files\TaskbarPanels\uninsta
 - **Estilo del espectro**: onda líquida o barras cápsula
 - **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, personalizado por URL JSON) y quitar
 - **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u oscuro
+- **Proveedor del speed test**: Speedtest.net, Cloudflare, LibreSpeed o GCI
 - **Idioma / Language**: automático (idioma de Windows), español o inglés
 - **Reiniciar posición**, **Salir**
 
@@ -112,20 +137,20 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias |
 | `MonitorIds` | (informativo) | Código → nombre de los monitores detectados |
 
-Otros archivos en la misma carpeta: `pos.json` (separación del panel de red), `usage_cache.json`
-(último consumo, evita consultas al reiniciar), `crash.log` (si el programa falla) y `debug.log`
-(solo si existe `debug.flag`).
+Otros archivos en la misma carpeta: `pos.json` (separación del panel de red), `ai_cache.json`
+(último consumo, evita consultas al reiniciar), `flags\` (caché de banderas), `crash.log` (si el programa falla)
+y `debug.log` (solo si existe `debug.flag`).
 
 ## Compilar desde el código
 
 Requiere [Rust](https://rustup.rs) (toolchain `stable-x86_64-pc-windows-msvc`) y las
-*Build Tools* de Visual Studio con el componente de C++.
+*Build Tools* de Visual Studio con el componente de C++. El instalador necesita además [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 ```powershell
 cargo build --release
 .\scripts\install.ps1                 # instala lo recién compilado
 .\scripts\make-screenshots.ps1        # regenera docs/images con datos de ejemplo
-.\scripts\package.ps1                 # genera dist\TaskbarPanels-vX.Y.Z-x64.zip (+ .sha256)
+.\scripts\package.ps1                 # genera dist\TaskbarPanels-vX.Y.Z-x64.zip y el instalador Setup .exe (+ .sha256)
 ```
 
 Estructura:
@@ -144,21 +169,25 @@ src/
   media.rs    sesión multimedia (WinRT), carátula, línea de tiempo y espectro (WASAPI + FFT)
   i18n.rs     idioma de la interfaz (español / inglés según Windows)
   config.rs   config.json
-scripts/      install / uninstall / package / make-screenshots
+installer/    script de Inno Setup (TaskbarPanels.iss)
+scripts/      install / uninstall / installer-helper / package / make-screenshots
 ```
 
 ## Publicar un release
 
-El workflow `.github/workflows/release.yml` compila, empaqueta y publica el release al subir un tag:
+El workflow `.github/workflows/release.yml` compila, empaqueta y publica el release al subir un tag;
+después, su job `winget` abre el pull request de actualización en `microsoft/winget-pkgs` (`winget.yml` permite repetirlo a mano).
 
 ```powershell
-# 1. sube la versión en Cargo.toml y anota los cambios en CHANGELOG.md
+# 1. sube la versión en Cargo.toml y anota los cambios en CHANGELOG.md / CHANGELOG.en.md
 git commit -am "v1.0.1"
 git tag v1.0.1
 git push origin main --tags
 ```
 
-El release incluye `TaskbarPanels-vX.Y.Z-x64.zip` y su `.sha256`.
+El release incluye `TaskbarPanels-Setup-vX.Y.Z-x64.exe`, `TaskbarPanels-vX.Y.Z-x64.zip` y sus `.sha256`.
+El workflow de winget necesita el secreto `WINGET_TOKEN` (PAT clásico con el permiso `public_repo`)
+y un fork de `microsoft/winget-pkgs` en la misma cuenta.
 
 ## Privacidad y notas
 
@@ -171,7 +200,7 @@ El release incluye `TaskbarPanels-vX.Y.Z-x64.zip` y su `.sha256`.
   - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta;
   - `www.cloudflare.com/cdn-cgi/trace` junto con la consulta de IP, para confirmar el país;
   - `flagcdn.com` para la bandera del país de la IP, una sola vez por país (queda en caché);
-  - el proveedor de speed test elegido (`speed.cloudflare.com`, servidores de Speedtest.net vía `www.speedtest.net/api/js/servers` servidores públicos de LibreSpeed vía `librespeed.org/backend-servers` o `speedtest.gci.co.cr`), solo al pulsar **Iniciar prueba** en la ventana de red (hasta ~350 MB).
+  - el proveedor de speed test elegido (`speed.cloudflare.com`, servidores de Speedtest.net vía `www.speedtest.net/api/js/servers`, servidores públicos de LibreSpeed vía `librespeed.org/backend-servers` o `speedtest.gci.co.cr`), solo al pulsar **Iniciar prueba** en la ventana de red (hasta ~350 MB).
 - Los endpoints de consumo de Claude y Copilot **no están documentados**: pueden cambiar sin aviso.
   Si responden con error o límite de consultas (429), se conservan los últimos valores.
 - El programa **no renueva** el token de Claude Code: si caduca, se renueva al volver a abrir Claude Code.
@@ -181,8 +210,8 @@ El release incluye `TaskbarPanels-vX.Y.Z-x64.zip` y su `.sha256`.
 | Problema | Qué hacer |
 |---|---|
 | No aparecen los paneles | Comprueba la tarea: `Get-ScheduledTask TaskbarPanels`; revisa `%APPDATA%\TaskbarPanels\crash.log` |
-| Faltan en una pantalla | Menú **Pantallas**; en pantalla completa o con la barra auto-ocultada se ocultan a propósito |
-| FPS siempre «—» | ¿Existe `C:\Program Files\TaskbarPanels\tools\PresentMon.exe`? Reinstala sin `-SkipPresentMon` |
+| Faltan en una pantalla | Menú **Pantallas**; se ocultan a propósito cuando la barra no se ve (pantalla completa, auto-ocultar) |
+| FPS siempre «—» | ¿Existe `C:\Program Files\TaskbarPanels\tools\PresentMon.exe`? Reinstala con la tarea de PresentMon |
 | Temperatura de CPU «—» | Solo disponible en portátiles Lenovo compatibles |
 | Consumo de Claude «—» | Abre Claude Code para renovar la sesión; espera hasta 3 min |
 | Diagnóstico detallado | Crea `%APPDATA%\TaskbarPanels\debug.flag` y revisa `debug.log` |
