@@ -1,6 +1,6 @@
 [package]
 name = "taskbar-panels"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 description = "Paneles modernos para la barra de tareas de Windows 11: red, consumo de Claude/Copilot, sistema (CPU/GPU/FPS/discos) y multimedia"
 license = "MIT"

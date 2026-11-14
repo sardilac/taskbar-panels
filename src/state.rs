@@ -22,6 +22,8 @@ pub struct State {
     pub ip: String,
     pub isp: String,
     pub city: String,
+    /// código ISO del país de la IP pública (p. ej. "CR")
+    pub country: String,
     pub ip_changed: Option<(String, String, String)>,
     pub ip_changed_at: Option<std::time::Instant>,
     pub down_bps: f64,
@@ -104,26 +106,61 @@ pub fn agent() -> ureq::Agent {
 }
 
 // ---------------------------------------------------------------- IP pública
-fn fetch_ip(a: &ureq::Agent) -> Option<(String, String, String)> {
+/// País según Cloudflare (`loc` de cdn-cgi/trace): suele estar más al día que la base de ifconfig.co
+/// (p. ej. bloques de un operador de un país anunciados desde otro, VPN, centros de datos)
+fn cloudflare_loc(a: &ureq::Agent) -> Option<(String, String)> {
+    let body = a.get("https://www.cloudflare.com/cdn-cgi/trace").call().ok()?.into_string().ok()?;
+    let field = |k: &str| body.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string());
+    let loc = field("loc=")?;
+    (loc.len() == 2 && loc != "XX" && loc != "T1").then(|| (field("ip=").unwrap_or_default(), loc))
+}
+
+/// Nombre del país (ISO alfa-2) en el idioma de Windows
+fn country_name(iso: &str) -> String {
+    use windows::Win32::Globalization::{GetGeoInfoEx, GEO_FRIENDLYNAME};
+    let code = crate::util::wide(iso);
+    let mut buf = [0u16; 128];
+    let n = unsafe { GetGeoInfoEx(windows::core::PCWSTR(code.as_ptr()), windows::Win32::Globalization::SYSGEOTYPE(GEO_FRIENDLYNAME.0), Some(&mut buf)) };
+    if n > 1 { String::from_utf16_lossy(&buf[..n as usize - 1]) } else { iso.to_string() }
+}
+
+fn fetch_ip(a: &ureq::Agent) -> Option<(String, String, String, String)> {
+    let cf = cloudflare_loc(a);
     if let Ok(v) = a.get("https://ifconfig.co/json").call().and_then(|r| Ok(r.into_json::<Value>()?)) {
         let ip = v["ip"].as_str().unwrap_or_default().to_string();
         if !ip.is_empty() {
-            let city = [v["city"].as_str(), v["country"].as_str()].iter().flatten().copied().collect::<Vec<_>>().join(", ");
-            return Some((ip, v["asn_org"].as_str().unwrap_or_default().to_string(), city));
+            let mut iso = v["country_iso"].as_str().unwrap_or_default().to_string();
+            let mut city = [v["city"].as_str(), v["country"].as_str()].iter().flatten().copied().collect::<Vec<_>>().join(", ");
+            // si Cloudflare (misma IP) ubica la IP en otro país, manda Cloudflare
+            if let Some((cf_ip, loc)) = &cf {
+                if (cf_ip.is_empty() || *cf_ip == ip) && !loc.eq_ignore_ascii_case(&iso) {
+                    iso = loc.clone();
+                    city = country_name(loc);
+                }
+            }
+            return Some((ip, v["asn_org"].as_str().unwrap_or_default().to_string(), city, iso));
         }
     }
     let ip = a.get("https://api.ipify.org").call().ok()?.into_string().ok()?;
-    Some((ip.trim().to_string(), String::new(), String::new()))
+    let (city, iso) = cf.map(|(_, loc)| (country_name(&loc), loc)).unwrap_or_default();
+    Some((ip.trim().to_string(), String::new(), city, iso))
 }
 
 pub fn spawn_ip_worker() {
     let (tx, rx) = channel();
     *IP_REFRESH.lock().unwrap() = Some(tx);
     std::thread::spawn(move || {
+        // COM para decodificar la bandera (WinRT)
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+        }
         let a = agent();
         loop {
             match fetch_ip(&a) {
-                Some((ip, isp, city)) => {
+                Some((ip, isp, city, country)) => {
+                    if !country.is_empty() {
+                        crate::flags::ensure(&a, &country);
+                    }
                     let mut s = st();
                     let old = s.ip.clone();
                     if !old.is_empty() && old.contains('.') && old != ip {
@@ -133,6 +170,7 @@ pub fn spawn_ip_worker() {
                     s.ip = ip;
                     s.isp = isp;
                     s.city = city;
+                    s.country = country;
                 }
                 None => st().ip = crate::i18n::tr("sin conexión", "offline").into(),
             }

@@ -14,6 +14,7 @@ mod i18n;
 mod media;
 mod net;
 mod render;
+mod flags;
 mod speedtest;
 mod state;
 mod sys;
@@ -226,8 +227,36 @@ fn paint_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32, 
     } else {
         (Rgb::u8(255, 70, 90), 0.5)
     };
-    c.dot(1.0 * sc + icon_w / 2.0, y + row / 2.0, 2.6 * sc, dot_col, 1.0, 2.5 * sc, glow);
-    c.text(&s.ip, x_txt, y, w - x_txt, row, px, 400, "Segoe UI", GAINSBORO, DT_LEFT);
+    // con conexión: bandera del país de la IP en lugar del punto (si ya se cargó)
+    let online = s.ip.contains('.') || s.ip.contains(':');
+    let fh = (px * 0.78).max(6.0 * sc);
+    let fw = if online { flag_width(fh) } else { 0.0 };
+    if fw > 0.0 {
+        if glow > 0.5 {
+            c.dot(1.0 * sc + fw / 2.0, y + row / 2.0, 2.6 * sc, dot_col, 0.0, 4.0 * sc, glow); // halo tras un cambio de IP
+        }
+        draw_flag(c, 1.0 * sc, y + row / 2.0, fh, sc);
+    } else {
+        c.dot(1.0 * sc + icon_w / 2.0, y + row / 2.0, 2.6 * sc, dot_col, 1.0, 2.5 * sc, glow);
+    }
+    let xt = x_txt.max(1.0 * sc + fw + 3.0 * sc);
+    c.text(&s.ip, xt, y, w - xt, row, px, 400, "Segoe UI", GAINSBORO, DT_LEFT);
+}
+
+/// Ancho de la bandera del país de la IP a una altura dada (0 si no hay bandera)
+fn flag_width(h: f32) -> f32 {
+    flags::FLAG.lock().unwrap().as_ref().map(|f| (h * f.w as f32 / f.h as f32).round()).unwrap_or(0.0)
+}
+
+/// Dibuja la bandera (alto `h`, centrada en `cy`) con un borde tenue; devuelve el ancho usado
+fn draw_flag(c: &mut Surface, x: f32, cy: f32, h: f32, sc: f32) -> f32 {
+    let Some(f) = flags::FLAG.lock().unwrap().clone() else { return 0.0 };
+    let w = (h * f.w as f32 / f.h as f32).round();
+    let (x, y) = (x.round(), (cy - h / 2.0).round());
+    let r = (1.5 * sc).min(h * 0.2);
+    c.round_rect(x - 0.5 * sc, y - 0.5 * sc, w + 1.0 * sc, h + 1.0 * sc, r + 0.5 * sc, WHITE, 0.18);
+    c.image_rect(x, y, w, h, r, &f.px, f.w, f.h, 1.0);
+    w
 }
 
 // ======================================================================= IA: proveedores, iconos y paneles
@@ -868,6 +897,7 @@ fn paint_router_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, t: f32) 
 // ----------------------------------------------------------------------- prueba de velocidad (ventana de red)
 const SPEED_CARD_H: f32 = 124.0;
 const ACT_SPEEDTEST: u32 = 1;
+const ACT_SPEED_PROVIDER: u32 = 2;
 
 thread_local! {
     /// zonas pulsables de la ventana flotante (en coordenadas de la ventana) y la que tiene el cursor
@@ -907,13 +937,28 @@ fn paint_speed_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
     let tx = gx + r + 16.0 * sc;
     let tw = x + cw - 10.0 * sc - tx;
     badge(c, tx, y + 18.0 * sc, "SPEED TEST", 8.0 * sc, Rgb::u8(120, 220, 255), sc, 0.0);
-    let meta = match (&s.finished_at, s.colo.is_empty()) {
-        (Some(t), false) => format!("Cloudflare {}  ·  {}", s.colo, util::fmt_local(*t)),
+    // selector de proveedor (clic → siguiente); durante la prueba muestra el que se está usando
+    let prov = if busy { speedtest::provider_name(&s.provider) } else { speedtest::provider_name(speedtest::selected()) };
+    let chip = format!("{prov}  ⇄");
+    let chip_w = c.text_width(&chip, 8.5 * sc, 600, "Segoe UI") + 14.0 * sc;
+    let (cx0, cy0, ch0) = (x + cw - 10.0 * sc - chip_w, y + 9.0 * sc, 17.0 * sc);
+    let chip_hover = !busy && POPUP_HOVER.with(|h| h.get()) == ACT_SPEED_PROVIDER;
+    c.round_rect(cx0, cy0, chip_w, ch0, ch0 / 2.0, Rgb::u8(120, 220, 255), if chip_hover { 0.32 } else { 0.14 });
+    c.text(&chip, cx0, cy0, chip_w, ch0, 8.5 * sc, 600, "Segoe UI", if busy { DIM } else { Rgb::u8(170, 230, 255) }, DT_CENTER);
+    POPUP_HITS.with(|h| {
+        let mut h = h.borrow_mut();
+        h.retain(|r| r.4 != ACT_SPEED_PROVIDER);
+        if !busy {
+            h.push((cx0, cy0, cx0 + chip_w, cy0 + ch0, ACT_SPEED_PROVIDER));
+        }
+    });
+    // servidor y hora del último resultado (si es del proveedor elegido)
+    let meta = match (&s.finished_at, s.server.is_empty()) {
+        (Some(t), false) => format!("{}  ·  {}", s.server, util::fmt_local(*t)),
         (Some(t), true) => util::fmt_local(*t),
-        (None, false) => format!("Cloudflare {}", s.colo),
-        _ => "Cloudflare".into(),
+        (None, false) => s.server.clone(),
+        _ => String::new(),
     };
-    c.text(&meta, tx, y + 10.0 * sc, tw, 16.0 * sc, 8.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
     // ---- resultados
     let row = |c: &mut Surface, yy: f32, label: &str, value: String, col: Rgb| {
         c.text(label, tx, yy, tw, 16.0 * sc, 10.0 * sc, 400, "Segoe UI", Rgb::u8(205, 212, 228), DT_LEFT);
@@ -937,6 +982,7 @@ fn paint_speed_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
             _ => tr("Midiendo subida…", "Measuring upload…"),
         };
         c.text(label, bx, by - 2.0 * sc, bw, 14.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        c.text(&meta, bx + bw * 0.52, by - 2.0 * sc, bw * 0.48, 14.0 * sc, 8.0 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
         c.capsule_h(bx, bx + bw, by + 17.0 * sc, 2.5 * sc, WHITE, 0.14);
         c.capsule_h(bx, bx + (bw * s.progress).max(5.0 * sc), by + 17.0 * sc, 2.5 * sc, col, 1.0);
         POPUP_HITS.with(|h| h.borrow_mut().retain(|r| r.4 != ACT_SPEEDTEST));
@@ -950,7 +996,8 @@ fn paint_speed_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
             _ => tr("Probar de nuevo", "Test again"),
         };
         c.text(label, bx, by, bw, bh, 10.0 * sc, 600, "Segoe UI", WHITE, DT_CENTER);
-        c.text(tr("usa hasta ~350 MB", "uses up to ~350 MB"), bx, by - 15.0 * sc, bw, 13.0 * sc, 8.0 * sc, 400, "Segoe UI", DIM, DT_RIGHT);
+        let note = if s.phase == Phase::Error && !s.error.is_empty() { s.error.clone() } else if meta.is_empty() { tr("usa hasta ~350 MB", "uses up to ~350 MB").to_string() } else { meta.clone() };
+        c.text(&note, bx, by - 15.0 * sc, bw, 13.0 * sc, 8.0 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
         POPUP_HITS.with(|h| {
             let mut h = h.borrow_mut();
             h.retain(|r| r.4 != ACT_SPEEDTEST);
@@ -972,7 +1019,15 @@ fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t:
     let dot = if online { Rgb::u8(60, 230, 120) } else { Rgb::u8(255, 70, 90) };
     let bw = badge(c, x + 10.0 * sc, y + 17.0 * sc, tr("IP PÚBLICA", "PUBLIC IP"), 9.0 * sc, Rgb::u8(170, 200, 255), sc, 0.0);
     c.dot(x + 10.0 * sc + bw + 12.0 * sc, y + 17.0 * sc, 3.0 * sc, dot, 1.0, 3.0 * sc, 0.5);
-    c.text(&s.ip, x + 10.0 * sc + bw + 20.0 * sc, y + 4.0 * sc, cw - bw - 30.0 * sc, 26.0 * sc, 16.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
+    // bandera del país de la IP a la izquierda de la IP
+    let mut ix = x + 10.0 * sc + bw + 20.0 * sc;
+    if online {
+        let fw = draw_flag(c, ix, y + 17.0 * sc, 14.0 * sc, sc);
+        if fw > 0.0 {
+            ix += fw + 7.0 * sc;
+        }
+    }
+    c.text(&s.ip, ix, y + 4.0 * sc, x + cw - 10.0 * sc - ix, 26.0 * sc, 16.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
     let isp = [s.isp.as_str(), s.city.as_str()].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join("   ·   ");
     c.text(if isp.is_empty() { tr("ISP desconocido", "Unknown ISP") } else { &isp }, x + 10.0 * sc, y + 34.0 * sc, cw - 20.0 * sc, 22.0 * sc, 10.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
     y += ih + 8.0 * sc;
@@ -2137,6 +2192,7 @@ const ID_POPUP_STYLE_BASE: usize = 80; // +índice de POPUP_STYLES
 const ID_LANG_AUTO: usize = 90;
 const ID_LANG_ES: usize = 91;
 const ID_LANG_EN: usize = 92;
+const ID_SPEED_BASE: usize = 93; // +índice de speedtest::PROVIDERS (93..=96)
 const ID_EXIT: usize = 99;
 
 /// Agrega un submenú con texto traducido
@@ -2240,6 +2296,14 @@ unsafe fn show_menu(main: HWND) {
         }
         append_sub(menu, sub, tr("Fondo de las ventanas", "Window background"));
     }
+    // Speed test: proveedor
+    if let Ok(sub) = CreatePopupMenu() {
+        let cur = speedtest::selected();
+        for (i, (k, name)) in speedtest::PROVIDERS.iter().enumerate() {
+            append(sub, ID_SPEED_BASE + i, name, cur == *k);
+        }
+        append_sub(menu, sub, tr("Proveedor del speed test", "Speed test provider"));
+    }
     // Idioma: automático (sistema), español o inglés
     let lang = with_app(|a| a.cfg.v["Language"].as_str().unwrap_or("auto").to_string()).unwrap_or_else(|| "auto".into());
     if let Ok(sub) = CreatePopupMenu() {
@@ -2297,6 +2361,12 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
             }
             c if (ID_POPUP_STYLE_BASE..ID_POPUP_STYLE_BASE + POPUP_STYLES.len()).contains(&c) => {
                 app.cfg.v["PopupStyle"] = serde_json::json!(POPUP_STYLES[c - ID_POPUP_STYLE_BASE].0);
+                save = true;
+            }
+            c if (ID_SPEED_BASE..ID_SPEED_BASE + speedtest::PROVIDERS.len()).contains(&c) => {
+                let k = speedtest::PROVIDERS[c - ID_SPEED_BASE].0;
+                speedtest::select(k);
+                app.cfg.v["SpeedTestProvider"] = serde_json::json!(k);
                 save = true;
             }
             ID_LANG_AUTO | ID_LANG_ES | ID_LANG_EN => {
@@ -2562,7 +2632,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (x, y) = ((lp.0 & 0xFFFF) as i16 as f32, ((lp.0 >> 16) & 0xFFFF) as i16 as f32);
             let hit = popup_hit(x, y);
             if msg == WM_LBUTTONUP && hit == ACT_SPEEDTEST {
-                speedtest::start();
+                speedtest::start(speedtest::selected());
+            }
+            if msg == WM_LBUTTONUP && hit == ACT_SPEED_PROVIDER && !speedtest::running() {
+                let k = speedtest::next_provider();
+                speedtest::select(k);
+                with_app(|app| {
+                    app.cfg.v["SpeedTestProvider"] = serde_json::json!(k);
+                    let mons = monitors_for_config(&app.bars, &app.cfg);
+                    app.cfg.save(&mons);
+                });
             }
             if POPUP_HOVER.with(|h| h.replace(hit)) != hit || msg == WM_LBUTTONUP {
                 let _ = InvalidateRect(hwnd, None, FALSE);
@@ -2653,6 +2732,10 @@ fn save_bmp(path: &str, c: &mut Surface, bg: (u8, u8, u8)) {
 
 /// Datos ficticios para las imágenes (IP de documentación RFC 5737, nombres genéricos)
 fn demo_state() {
+    // bandera ficticia (franjas) para las capturas: no corresponde a ningún país
+    let (fw, fh) = (30usize, 18usize);
+    let px = (0..fw * fh).map(|i| if (i % fw) * fh < (fh - i / fw) * fw { 0xFF7A5CFF } else { 0xFF2EC4B6 }).collect();
+    *flags::FLAG.lock().unwrap() = Some(std::sync::Arc::new(flags::Flag { code: "xx".into(), px, w: fw, h: fh }));
     *speedtest::SPEED.lock().unwrap() = speedtest::Speed {
         phase: speedtest::Phase::Done,
         progress: 1.0,
@@ -2660,7 +2743,8 @@ fn demo_state() {
         jitter_ms: Some(2.0),
         down_mbps: Some(487.0),
         up_mbps: Some(212.0),
-        colo: "MIA".into(),
+        provider: "ookla".into(),
+        server: "Example ISP · Ciudad".into(),
         finished_at: Some(util::now_epoch() - 120),
         ..Default::default()
     };
@@ -2876,7 +2960,9 @@ fn main() {
         return;
     }
     // Idioma: el de Windows, salvo que config.json lo fije ("Language": "es" | "en")
-    i18n::init(Config::load().v["Language"].as_str());
+    let boot_cfg = Config::load();
+    i18n::init(boot_cfg.v["Language"].as_str());
+    speedtest::select(speedtest::provider_key(&boot_cfg.v));
     unsafe {
         windows::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler(1, Some(crash_handler));
         // Instancia única

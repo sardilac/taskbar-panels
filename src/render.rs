@@ -263,25 +263,30 @@ impl Surface {
     /// con esquinas redondeadas suavizadas
     #[allow(clippy::too_many_arguments)]
     pub fn image_rounded(&mut self, x: f32, y: f32, size: f32, radius: f32, src: &[u32], sw: usize, sh: usize, a: f32) {
-        if src.len() < sw * sh || size < 2.0 {
+        self.image_rect(x, y, size, size, radius, src, sw, sh, a);
+    }
+
+    /// Imagen escalada (bilineal) a un rectángulo w×h con esquinas redondeadas
+    pub fn image_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, src: &[u32], sw: usize, sh: usize, a: f32) {
+        if src.len() < sw * sh || w < 2.0 || h < 2.0 {
             return;
         }
-        let half = size / 2.0;
+        let (hw, hh) = (w / 2.0, h / 2.0);
         let sample = |sx: i32, sy: i32| -> [f32; 4] {
             let p = src[(sy.clamp(0, sh as i32 - 1) as usize) * sw + sx.clamp(0, sw as i32 - 1) as usize];
             [(p & 0xFF) as f32, ((p >> 8) & 0xFF) as f32, ((p >> 16) & 0xFF) as f32, ((p >> 24) & 0xFF) as f32]
         };
-        for py in y.floor() as i32..(y + size).ceil() as i32 {
-            for px in x.floor() as i32..(x + size).ceil() as i32 {
+        for py in y.floor() as i32..(y + h).ceil() as i32 {
+            for px in x.floor() as i32..(x + w).ceil() as i32 {
                 let (fx, fy) = (px as f32 + 0.5 - x, py as f32 + 0.5 - y);
-                let qx = (fx - half).abs() - (half - radius);
-                let qy = (fy - half).abs() - (half - radius);
+                let qx = (fx - hw).abs() - (hw - radius);
+                let qy = (fy - hh).abs() - (hh - radius);
                 let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - radius;
                 let cov = (0.5 - d).clamp(0.0, 1.0);
                 if cov <= 0.0 {
                     continue;
                 }
-                let (u, v) = (fx / size * sw as f32 - 0.5, fy / size * sh as f32 - 0.5);
+                let (u, v) = (fx / w * sw as f32 - 0.5, fy / h * sh as f32 - 0.5);
                 let (u0, v0) = (u.floor(), v.floor());
                 let (du, dv) = (u - u0, v - v0);
                 let (a00, a10, a01, a11) = (sample(u0 as i32, v0 as i32), sample(u0 as i32 + 1, v0 as i32), sample(u0 as i32, v0 as i32 + 1), sample(u0 as i32 + 1, v0 as i32 + 1));

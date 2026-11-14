@@ -361,6 +361,51 @@ pub fn hide_reason(tb: &Taskbar) -> Option<String> {
         GetWindowThreadProcessId(tb.hwnd, Some(&mut shell_pid));
         let mut s = FsSearch { mon: mi.rcMonitor, fg: GetForegroundWindow(), hide: false, reason: String::new(), shell_pid };
         let _ = EnumWindows(Some(fs_cb), LPARAM(&mut s as *mut _ as isize));
-        if s.hide { Some(s.reason) } else { None }
+        if s.hide {
+            return Some(s.reason);
+        }
+        taskbar_covered(tb, shell_pid)
     }
+}
+
+/// ¿La barra está tapada en pantalla? Prueba qué ventana hay en varios puntos a lo largo de la barra:
+/// si en ninguno aparece la barra y en al menos dos hay otra aplicación (p. ej. un juego a pantalla
+/// completa que Windows colocó por encima), la barra no es visible. Los puntos tapados por los propios
+/// paneles, menús o tooltips no cuentan.
+unsafe fn taskbar_covered(tb: &Taskbar, shell_pid: u32) -> Option<String> {
+    let r = tb.rect;
+    if r.right - r.left < 8 || r.bottom - r.top < 8 {
+        return None;
+    }
+    let own = std::process::id();
+    let (mut covered, mut who) = (0, String::new());
+    for f in [0.06f32, 0.25, 0.45, 0.6, 0.8, 0.95] {
+        let pt = if tb.vertical {
+            POINT { x: (r.left + r.right) / 2, y: r.top + ((r.bottom - r.top) as f32 * f) as i32 }
+        } else {
+            POINT { x: r.left + ((r.right - r.left) as f32 * f) as i32, y: (r.top + r.bottom) / 2 }
+        };
+        let h = WindowFromPoint(pt);
+        if h.is_invalid() {
+            continue;
+        }
+        let root = GetAncestor(h, GA_ROOT);
+        if root == tb.hwnd {
+            return None; // se ve la barra
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(root, Some(&mut pid));
+        if pid == shell_pid {
+            return None; // desplegables del shell sobre la barra: la barra está activa
+        }
+        let c = class_of(root);
+        if pid == own || matches!(c.as_str(), "#32768" | "tooltips_class32" | "Xaml_WindowedPopupClass") {
+            continue;
+        }
+        covered += 1;
+        if who.is_empty() {
+            who = format!("{c} (pid {pid})");
+        }
+    }
+    (covered >= 2).then(|| format!("barra tapada por {who}"))
 }

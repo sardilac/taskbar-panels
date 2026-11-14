@@ -16,7 +16,7 @@ detalle de cada panel, todo en un solo proceso de ~60 MB de RAM y menos del 1 % 
 | **Multimedia** (si hay algo reproduciéndose o en pausa) | Carátula con vinilo animado, botones anterior / reproducir / siguiente con el color del álbum, título desplazable, progreso y espectro de audio (onda líquida o barras cápsula) | Carátula grande, título, artista, álbum, app, tiempos y espectro |
 | **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa y anillo del disco del sistema con lectura/escritura | Modelo de CPU/GPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas |
 | **Consumo de IA** | El proveedor principal con su icono (o un resumen de todos) | Una tarjeta por proveedor: icono, plan, barras, gasto y reinicios (hora local) |
-| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto, totales de la sesión y **speed test** bajo demanda (Cloudflare) |
+| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto, totales de la sesión y **speed test** bajo demanda (Speedtest.net, Cloudflare, LibreSpeed o GCI) y bandera del país de la IP |
 
 <p>
   <img src="docs/images/popup-sistema.png" width="300" alt="Ventana flotante de sistema">
@@ -104,6 +104,7 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `Panels` | `{ "SystemPanel": false }` | Activar o desactivar paneles |
 | `AiProviders` | lista de proveedores | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "custom", "name", "enabled", "budget" }`; los personalizados añaden `url`, `percentField`, `valueField`, `labelField`. Las claves van al Administrador de credenciales (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` o un `id` | Proveedor que se muestra en la barra |
+| `SpeedTestProvider` | `ookla` (predeterminado) / `cloudflare` / `librespeed` / `gci` | Proveedor del speed test de la ventana de red |
 | `IpShowAddress` | `true` / `false` | Mostrar la IP pública en el panel de red |
 | `SpectrumStyle` | `"wave"`, `"bars"` | Estilo del espectro de audio (panel y ventana) |
 | `Language` | `"auto"`, `"es"`, `"en"` | Idioma de la interfaz (por defecto, el de Windows: español o, si no, inglés) |
@@ -136,7 +137,8 @@ src/
   host.rs     barras de tareas, monitores, orientación, pantalla completa (Win32 + UI Automation)
   state.rs    estado compartido e IP pública
   ai.rs       proveedores de IA (Claude, Copilot, OpenAI, Anthropic, personalizados) y credenciales
-  speedtest.rs prueba de velocidad (latencia, bajada y subida) contra speed.cloudflare.com
+  speedtest.rs prueba de velocidad (latencia, bajada y subida): Speedtest.net, Cloudflare, LibreSpeed o GCI
+  flags.rs    bandera del país de la IP pública (flagcdn.com, con caché local)
   net.rs      red local: adaptador, puerta de enlace, DNS (GetAdaptersAddresses) y ping (IcmpSendEcho)
   sys.rs      CPU/disco (PDH), GPU (NVML), sensores Lenovo (WMI), FPS (PresentMon), RAM, unidades
   media.rs    sesión multimedia (WinRT), carátula, línea de tiempo y espectro (WASAPI + FFT)
@@ -167,7 +169,9 @@ El release incluye `TaskbarPanels-vX.Y.Z-x64.zip` y su `.sha256`.
   - si los agregas: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (cada 5 min) y las URL de tus proveedores personalizados (cada 2 min);
   - `api.github.com` / `github.com` solo durante la instalación, para descargar PresentMon;
   - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta;
-  - `speed.cloudflare.com`, solo al pulsar **Iniciar prueba** en la ventana de red (hasta ~350 MB).
+  - `www.cloudflare.com/cdn-cgi/trace` junto con la consulta de IP, para confirmar el país;
+  - `flagcdn.com` para la bandera del país de la IP, una sola vez por país (queda en caché);
+  - el proveedor de speed test elegido (`speed.cloudflare.com`, servidores de Speedtest.net vía `www.speedtest.net/api/js/servers` servidores públicos de LibreSpeed vía `librespeed.org/backend-servers` o `speedtest.gci.co.cr`), solo al pulsar **Iniciar prueba** en la ventana de red (hasta ~350 MB).
 - Los endpoints de consumo de Claude y Copilot **no están documentados**: pueden cambiar sin aviso.
   Si responden con error o límite de consultas (429), se conservan los últimos valores.
 - El programa **no renueva** el token de Claude Code: si caduca, se renueva al volver a abrir Claude Code.

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.1
+
+- **Bandera del país** de la IP pública a la izquierda de la IP (ventana de red y fila de IP del panel). Se descarga una vez por país desde `flagcdn.com` y queda en caché en `%APPDATA%\TaskbarPanels\flags`. El país se toma de Cloudflare (`cdn-cgi/trace`) cuando no coincide con el de ifconfig.co, que puede ubicar mal bloques de IP anunciados desde otro país.
+- **Speed test con cuatro proveedores**: Speedtest.net (Ookla, predeterminado; elige el servidor cercano con menor latencia), Cloudflare, LibreSpeed (código abierto; servidor público con menor latencia) y GCI (`speedtest.gci.co.cr`, servidor LibreSpeed en Costa Rica). Se cambia con el selector de la tarjeta (clic para pasar al siguiente) o desde el menú *Proveedor del speed test* (clave `SpeedTestProvider`). La tarjeta muestra el servidor usado y, si falla, el motivo.
+- Speed test: si el servidor limita las descargas grandes (429 de Cloudflare tras varias pruebas seguidas) se reintenta con bloques más pequeños; la fase de subida ya no se queda unos segundos de más esperando a que cierren las conexiones.
+- Los paneles se ocultan cuando la barra de tareas no se ve en pantalla: además de detectar ventanas a pantalla completa en primer plano, se comprueba qué ventana hay sobre varios puntos de la barra. Así un juego a pantalla completa (p. ej. Fortnite) ya no queda con los paneles encima aunque el foco esté en otra pantalla.
+
 ## v1.2.0
 
 - **Red · speed test**: nueva tarjeta en la ventana de red con un botón para medir la conexión contra `speed.cloudflare.com`: latencia y jitter, bajada y subida (4 conexiones en paralelo, ~8 s por fase) con medidor circular en vivo, barra de progreso y centro de datos de Cloudflare. Solo se ejecuta al pulsar el botón y consume hasta ~350 MB.
