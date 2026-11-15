@@ -17,9 +17,9 @@ detalle de cada panel, todo en un solo proceso de ~5–10 MB de memoria privada 
 | Panel | En la barra | Al pasar el mouse |
 |---|---|---|
 | **Multimedia** (si hay algo reproduciéndose o en pausa) | Carátula con vinilo animado, botones anterior / reproducir / siguiente con el color del álbum, título desplazable, progreso y espectro de audio (5 estilos: onda líquida, barras cápsula, LED segmentado, barras con reflejo o línea neón) | Carátula grande, título, artista, álbum, app, tiempos y espectro |
-| **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa y anillo del disco del sistema (% usado) | Modelo de CPU, todas las GPU (NVIDIA, AMD Radeon, Intel) y la NPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas |
+| **Sistema** | CPU y GPU (uso + temperatura), FPS de la ventana activa, anillo del disco del sistema (% usado) y un **punto de estado** que pasa a ámbar o rojo cuando algo merece atención | Modelo de CPU, todas las GPU (NVIDIA, AMD Radeon, Intel) y la NPU, frecuencias, ventiladores, VRAM, consumo, RAM, todas las unidades en anillos y E/S de disco con gráficas, **ventiladores animados** que giran según las rpm reales, y **energía**: batería (nivel, animación de carga, vatios, autonomía) y **plan de energía** activo; **avisos** (temperatura alta sostenida, memoria o disco del sistema casi llenos, batería baja) y las **aplicaciones que más consumen** CPU y memoria. Las tarjetas van en dos columnas |
 | **Consumo de IA** | El proveedor principal con su icono (o un resumen de todos) | Una tarjeta por proveedor: icono, plan, barras, gasto y reinicios (hora local) |
-| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado | ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto, totales de la sesión y **speed test** bajo demanda (Speedtest.net, Cloudflare, LibreSpeed o GCI) y bandera del país de la IP |
+| **Red** | Subida y bajada con gráficas de 60 s, IP pública con indicador de estado y punto de **salud de la conexión** (verde / ámbar / rojo) | **Salud de la conexión**: diagnóstico en una frase (estable, Wi-Fi inestable, problema del proveedor, DNS lento…) con línea de tiempo de 2 minutos de latencia y pérdidas del router, el DNS e Internet; ISP, ubicación, router con puerta de enlace, DNS, adaptador y **ping a la puerta de enlace** (solo mientras la ventana está abierta), máximos del último minuto, totales de la sesión y **speed test** bajo demanda (Speedtest.net, Cloudflare, LibreSpeed o GCI) y bandera del país de la IP |
 
 <p>
   <img src="docs/images/es/popup-sistema.png" width="300" alt="Ventana flotante de sistema">
@@ -67,6 +67,9 @@ Funciones que dependen del equipo (si no están disponibles, el panel muestra «
 | Consumo de Claude | Sesión iniciada en **Claude Code** en ese usuario |
 | Consumo de Copilot | Un token de GitHub de la cuenta con Copilot: se detecta solo desde **Git Credential Manager**, **GitHub CLI** (`gh auth login`), los plugins oficiales de Copilot o `GH_TOKEN`; si no, menú **IA → Token de GitHub para Copilot…** |
 | Gasto de la API de OpenAI / Anthropic | Una **clave de administrador** de cada plataforma (se pide al agregar el proveedor) |
+| Saldo de la cuenta de DeepSeek / Kimi (Moonshot AI) | Una **clave de API** de cada plataforma; con un saldo de referencia opcional (tu última recarga) el saldo se muestra como barra de consumo |
+| Modelos disponibles de Gemini y Ollama Cloud | Una **clave de API**; ninguno de los dos publica el consumo ni la cuota restante, así que solo se comprueba la clave y se cuentan los modelos |
+| Modelos cargados e instalados de Ollama / LM Studio | El servidor local en marcha (`localhost:11434` / `localhost:1234` por defecto, o cualquier servidor de tu red); sin clave |
 
 ## Instalación
 
@@ -126,9 +129,10 @@ La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 - **Pantallas**: todas, solo la principal o una selección de monitores
 - **Formato de los paneles**: sistema e IA automáticos (icono si no cabe), panel o icono; red como panel o icono
 - **Estilo del espectro**: onda líquida, barras cápsula, LED segmentado, barras con reflejo o línea neón
-- **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, personalizado por URL JSON), quitar y **token de GitHub para Copilot**
+- **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, Gemini, DeepSeek, Kimi, Ollama local y Cloud, LM Studio, personalizado por URL JSON), quitar y **token de GitHub para Copilot**
 - **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u opaco (todos siguen el modo claro/oscuro)
 - **Proveedor del speed test**: Speedtest.net, Cloudflare, LibreSpeed o GCI
+- **Salud de la conexión**: activa o desactiva la comprobación continua de router / DNS / Internet
 - **Idioma / Language**: automático (idioma de Windows), español o inglés
 - **Reiniciar posición**, **Salir**
 
@@ -145,10 +149,11 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Selección por panel: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Activar o desactivar paneles |
 | `PanelStyle` | `{ "SystemPanel" / "UsagePanel": "auto" \| "full" \| "icon", "NetworkPanel": "full" \| "icon" }` | Formato en la barra: panel con detalle o icono (`auto` = icono solo si no cabe). En barras verticales los tres van como icono salvo que se elija `"full"` |
-| `AiProviders` | lista de proveedores | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "custom", "name", "enabled", "budget" }`; los personalizados añaden `url`, `percentField`, `valueField`, `labelField`. Las claves van al Administrador de credenciales (`TaskbarPanels:<id>`) |
+| `AiProviders` | lista de proveedores | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "gemini" \| "deepseek" \| "kimi" \| "ollama" \| "ollama_cloud" \| "lmstudio" \| "custom", "name", "enabled", "budget" }`; los personalizados añaden `url`, `percentField`, `valueField`, `labelField`. Las claves van al Administrador de credenciales (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` o un `id` | Proveedor que se muestra en la barra |
 | `SpeedTestProvider` | `ookla` (predeterminado) / `cloudflare` / `librespeed` / `gci` | Proveedor del speed test de la ventana de red |
 | `IpShowAddress` | `true` / `false` | Mostrar la IP pública en el panel de red |
+| `NetHealth` | `true` (predeterminado) / `false` | Salud de la conexión: ping al router, al DNS y a Internet cada 2 s (menú *Salud de la conexión*) |
 | `SpectrumStyle` | `"wave"`, `"bars"`, `"led"`, `"mirror"`, `"line"` | Estilo del espectro de audio (panel y ventana) |
 | `MediaWidth` | `400`, `480`, `560` (predeterminado), `680`, `800` o cualquier valor de 320 a 1200 | Ancho del panel multimedia en píxeles lógicos (menú *Tamaño del panel multimedia*); se reduce solo si no hay espacio suficiente |
 | `Language` | `"auto"`, `"es"`, `"en"` | Idioma de la interfaz (por defecto, el de Windows: español o, si no, inglés) |
@@ -180,12 +185,12 @@ src/
   render.rs   lienzo con alfa por píxel (UpdateLayeredWindow), formas y texto suavizados
   host.rs     barras de tareas (los paneles son ventanas hijas de la barra), monitores, orientación, pantalla completa (Win32 + UI Automation)
   state.rs    estado compartido e IP pública
-  ai.rs       proveedores de IA (Claude, Copilot, OpenAI, Anthropic, personalizados) y credenciales
+  ai.rs       proveedores de IA (Claude, Copilot, OpenAI, Anthropic, Gemini, DeepSeek, Kimi, Ollama, LM Studio, personalizados) y credenciales
   speedtest.rs prueba de velocidad (latencia, bajada y subida): Speedtest.net, Cloudflare, LibreSpeed o GCI
   flags.rs    bandera del país de la IP pública (flagcdn.com, con caché local)
-  net.rs      red local: adaptador, puerta de enlace, DNS (GetAdaptersAddresses) y ping (IcmpSendEcho)
+  net.rs      red local: adaptador, puerta de enlace, DNS (GetAdaptersAddresses) y ping (IcmpSendEcho); salud de la conexión (sondeo por tramos y diagnóstico)
   gpu.rs      todas las GPU y NPU: DXGI/DXCore, contadores de GPU de Windows, D3DKMT, NVML
-  sys.rs      CPU/disco (PDH), GPU/NPU con gpu.rs, sensores Lenovo (WMI), FPS (PresentMon), RAM, unidades
+  sys.rs      CPU/disco (PDH), GPU/NPU con gpu.rs, sensores Lenovo (WMI), FPS (PresentMon), RAM, unidades, batería, plan de energía y consumo por aplicación
   media.rs    sesión multimedia (WinRT), carátula, línea de tiempo y espectro (WASAPI + FFT)
   i18n.rs     idioma de la interfaz (español / inglés según Windows)
   config.rs   config.json
@@ -215,9 +220,10 @@ y un fork de `microsoft/winget-pkgs` en la misma cuenta.
   - `ifconfig.co` (y `api.ipify.org` de respaldo) para la IP pública, cada 5 min;
   - `api.anthropic.com/api/oauth/usage` con el token de Claude Code, cada 3 min;
   - `api.github.com/copilot_internal/user` con tu token de GitHub, cada 5 min;
-  - si los agregas: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (cada 5 min) y las URL de tus proveedores personalizados (cada 2 min);
+  - si los agregas: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` `generativelanguage.googleapis.com/v1beta/models`, `api.deepseek.com/user/balance`, `api.moonshot.ai/v1/users/me/balance`, `ollama.com/api/ps` y `/api/tags` (cada 5 min), tu servidor de Ollama / LM Studio (cada 30 s) y las URL de tus proveedores personalizados (cada 2 min);
   - `api.github.com` / `github.com` solo durante la instalación, para descargar PresentMon;
   - ping ICMP a la **puerta de enlace local**, solo mientras la ventana de red está abierta;
+  - salud de la conexión: un ping ICMP cada 2 s a la puerta de enlace local, a tu servidor DNS y a `1.1.1.1` (`8.8.8.8` si no responde); se puede desactivar desde el menú (*Salud de la conexión*) o con `"NetHealth": false`;
   - `www.cloudflare.com/cdn-cgi/trace` junto con la consulta de IP, para confirmar el país;
   - `flagcdn.com` para la bandera del país de la IP, una sola vez por país (queda en caché);
   - el proveedor de speed test elegido (`speed.cloudflare.com`, servidores de Speedtest.net vía `www.speedtest.net/api/js/servers`, servidores públicos de LibreSpeed vía `librespeed.org/backend-servers` o `speedtest.gci.co.cr`), solo al pulsar **Iniciar prueba** en la ventana de red (hasta ~350 MB).

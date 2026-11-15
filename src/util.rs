@@ -130,3 +130,66 @@ pub fn fmt_date(epoch: i64) -> String {
         .map(|(_, d, m, _, _)| if crate::i18n::es() { format!("{d:02}/{m:02}") } else { format!("{} {d}", MON[(m as usize).clamp(1, 12) - 1]) })
         .unwrap_or_default()
 }
+// ---------------------------------------------------------------- diagnóstico: CPU por hilo
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentThread() -> isize;
+    fn GetCurrentProcess() -> isize;
+    fn DuplicateHandle(sp: isize, sh: isize, dp: isize, out: *mut isize, access: u32, inherit: i32, opts: u32) -> i32;
+    fn GetThreadTimes(h: isize, creation: *mut u64, exit: *mut u64, kernel: *mut u64, user: *mut u64) -> i32;
+}
+
+/// Hilos registrados: nombre, handle y tiempo de CPU (100 ns) en el último volcado
+static THREADS: std::sync::Mutex<Vec<(&'static str, isize, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Registra el hilo actual con un nombre para el volcado de CPU por hilo
+pub fn prof(name: &'static str) {
+    unsafe {
+        let mut h = 0isize;
+        if DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &mut h, 0, 0, 2) != 0 {
+            THREADS.lock().unwrap().push((name, h, 0));
+        }
+    }
+}
+
+/// CPU gastada por cada hilo registrado desde el volcado anterior, en ms ("ui=120 sys=4 …")
+pub fn prof_dump() -> String {
+    let mut out = Vec::new();
+    for t in THREADS.lock().unwrap().iter_mut() {
+        let (mut c, mut e, mut k, mut u) = (0u64, 0u64, 0u64, 0u64);
+        if unsafe { GetThreadTimes(t.1, &mut c, &mut e, &mut k, &mut u) } != 0 {
+            let total = k + u;
+            out.push(format!("{}={}", t.0, (total - t.2.min(total)) / 10_000));
+            t.2 = total;
+        }
+    }
+    out.join(" ")
+}
+
+thread_local! {
+    /// tiempo acumulado por sección del hilo de interfaz (nombre, µs, veces) desde el último volcado
+    static SECTIONS: std::cell::RefCell<Vec<(&'static str, u64, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Mide una sección del hilo de interfaz para el diagnóstico
+pub fn timed<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
+    let t = std::time::Instant::now();
+    let r = f();
+    let us = t.elapsed().as_micros() as u64;
+    SECTIONS.with(|s| {
+        let mut s = s.borrow_mut();
+        match s.iter_mut().find(|e| e.0 == name) {
+            Some(e) => {
+                e.1 += us;
+                e.2 += 1;
+            }
+            None => s.push((name, us, 1)),
+        }
+    });
+    r
+}
+
+/// Secciones del hilo de interfaz desde el volcado anterior: "nombre=ms/veces"
+pub fn sections_dump() -> String {
+    SECTIONS.with(|s| s.borrow_mut().drain(..).map(|(n, us, k)| format!("{n}={}/{k}", us / 1000)).collect::<Vec<_>>().join(" "))
+}

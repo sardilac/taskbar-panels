@@ -184,6 +184,83 @@ fn chain_layout(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 3], min_left: i
 mod tests {
     use super::*;
 
+    fn sys_ok() -> state::State {
+        state::State {
+            cpu: 20.0,
+            cpu_t: 60,
+            gpu_t: 55,
+            hist_cpu_t: vec![60.0; 60],
+            hist_gpu_t: vec![55.0; 60],
+            ram_used: 8.0,
+            ram_total: 32.0,
+            drives: vec![state::Drive { letter: std::env::var("SystemDrive").ok().and_then(|v| v.chars().next()).unwrap_or('C'), label: String::new(), total: 1000e9, free: 400e9 }],
+            bat_present: true,
+            bat_pct: 80,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sistema_sin_avisos() {
+        assert!(sys_alerts(&sys_ok()).is_empty());
+        assert_eq!(sys_level(&sys_ok()), net::Level::Ok);
+        assert_eq!(sys_level(&state::State { cpu: -1.0, ..Default::default() }), net::Level::Unknown);
+    }
+
+    #[test]
+    fn temperatura_solo_si_es_sostenida() {
+        let mut s = sys_ok();
+        // pico de 10 s a 99 °C: no avisa
+        s.hist_cpu_t = [vec![60.0; 50], vec![99.0; 10]].concat();
+        assert!(sys_alerts(&s).is_empty());
+        // 30 s a 96 °C: ámbar; a 101 °C: rojo
+        s.hist_cpu_t = [vec![60.0; 30], vec![96.0; 30]].concat();
+        s.cpu_t = 96;
+        assert_eq!(sys_alerts(&s), vec![(net::Level::Warn, SysAlert::CpuTemp(96))]);
+        s.hist_cpu_t = [vec![60.0; 30], vec![101.0; 30]].concat();
+        assert_eq!(sys_level(&s), net::Level::Bad);
+        // la GPU avisa antes que la CPU
+        let mut g = sys_ok();
+        g.hist_gpu_t = vec![88.0; 60];
+        g.gpu_t = 88;
+        assert_eq!(sys_alerts(&g), vec![(net::Level::Warn, SysAlert::GpuTemp(88))]);
+    }
+
+    #[test]
+    fn memoria_disco_y_bateria() {
+        let mut s = sys_ok();
+        s.ram_used = 29.5; // 92 %
+        s.drives[0].free = 30e9; // 3 % libre
+        s.bat_pct = 12;
+        let a = sys_alerts(&s);
+        assert_eq!(a.len(), 3);
+        assert_eq!(a[0], (net::Level::Warn, SysAlert::Ram(92)));
+        assert_eq!(a[1].0, net::Level::Bad);
+        assert!(matches!(a[1].1, SysAlert::Disk(_, 30)));
+        assert_eq!(a[2], (net::Level::Warn, SysAlert::Battery(12)));
+        assert_eq!(sys_level(&s), net::Level::Bad);
+        // enchufado: la batería baja no es un aviso
+        s.bat_ac = true;
+        assert_eq!(sys_alerts(&s).len(), 2);
+    }
+
+    #[test]
+    fn alto_de_la_ventana_de_sistema_cubre_ambas_columnas() {
+        let mut s = sys_ok();
+        s.gpus = vec![state::GpuStat::default(); 4];
+        s.fan_c = 2000;
+        // columna izquierda larga: 5 tarjetas de 92 + ventiladores
+        assert!(sys_popup_h(&s) >= 40.0 + 92.0 * 5.0 + FAN_CARD_H + 8.0);
+        // sin GPU detectadas manda la derecha, que siempre incluye la tarjeta de FPS
+        s.gpus.clear();
+        assert!(sys_popup_h(&s) > 40.0 + sys_left_h(&s) + FPS_CARD_MIN);
+        s.gpus = vec![state::GpuStat::default(); 4];
+        // con un aviso crece lo que ocupa la franja
+        let base = sys_popup_h(&s);
+        s.ram_used = 31.0;
+        assert_eq!(sys_popup_h(&s), base + alerts_h(1) + 8.0);
+    }
+
     fn bar(left: i32, right: i32, scale: f32) -> Taskbar {
         Taskbar { left, right, scale, height: 48, ..Default::default() }
     }
@@ -375,7 +452,7 @@ const GRAY: Rgb = Rgb::u8(128, 128, 128);
 
 fn severity(pct: Option<f64>, base: Rgb) -> Rgb {
     match pct {
-        None => GRAY,
+        None => base, // indicador sin porcentaje (saldo, modelos): color del proveedor
         Some(p) if p >= 90.0 => Rgb::u8(255, 70, 90),
         Some(p) if p >= 70.0 => Rgb::u8(255, 200, 60),
         _ => base,
@@ -442,6 +519,7 @@ fn paint_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32, 
         c.text(&num, x_txt, y, nw + 2.0, row, px, 600, "Segoe UI", col.mix(WHITE, 0.35), DT_LEFT);
         c.text(unit, x_txt + nw + 2.5 * sc, y, w - x_txt - nw, row, (px * 0.86).floor(), 400, "Segoe UI", Rgb::u8(165, 175, 195), DT_LEFT);
     }
+    health_dot(c, w, sc);
     if !show_ip {
         return;
     }
@@ -517,6 +595,12 @@ fn ai_color(p: &ai::Provider) -> Rgb {
         "copilot" => Rgb::u8(130, 110, 250),
         "openai" => Rgb::u8(40, 200, 150),
         "anthropic_api" => Rgb::u8(222, 170, 130),
+        "deepseek" => Rgb::u8(100, 135, 255),
+        "kimi" => Rgb::u8(70, 190, 255),
+        "gemini" => Rgb::u8(120, 150, 250),
+        "ollama" => Rgb::u8(215, 218, 228),
+        "ollama_cloud" => Rgb::u8(120, 185, 255),
+        "lmstudio" => Rgb::u8(165, 125, 255),
         _ => {
             let h = p.name.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
             neon_at((h % 1000) as f32 / 1000.0)
@@ -584,6 +668,52 @@ fn draw_ai_icon_colors(c: &mut Surface, p: &ai::Provider, cx: f32, cy: f32, r: f
             c.dot(cx, cy, r, Rgb::u8(240, 234, 222), 1.0, 0.0, 0.0);
             c.text("A", cx - r, cy - r, r * 2.0, r * 2.0, r * 1.25, 900, "Segoe UI", Rgb::u8(25, 25, 25), DT_CENTER);
         }
+        "deepseek" => {
+            // ballena blanca sobre azul: cuerpo, cola y ojo
+            let blue = Rgb::u8(77, 107, 254);
+            c.dot(cx, cy, r, blue, 1.0, 0.0, 0.0);
+            c.round_rect(cx - r * 0.62, cy - r * 0.22, r * 1.0, r * 0.62, r * 0.31, WHITE, 1.0);
+            c.round_rect(cx + r * 0.22, cy - r * 0.50, r * 0.20, r * 0.52, r * 0.10, WHITE, 1.0);
+            c.round_rect(cx + r * 0.10, cy - r * 0.56, r * 0.50, r * 0.20, r * 0.10, WHITE, 1.0);
+            c.dot(cx - r * 0.34, cy + r * 0.02, r * 0.09, blue, 1.0, 0.0, 0.0);
+        }
+        "kimi" => {
+            // K blanca sobre negro con punto azul
+            c.dot(cx, cy, r, Rgb::u8(22, 22, 28), 1.0, 0.0, 0.0);
+            c.text("K", cx - r * 1.1, cy - r, r * 2.0, r * 2.0, r * 1.2, 900, "Segoe UI", WHITE, DT_CENTER);
+            c.dot(cx + r * 0.50, cy - r * 0.46, r * 0.17, Rgb::u8(40, 140, 255), 1.0, 0.0, 0.0);
+        }
+        "gemini" => {
+            // destello de cuatro puntas blanco sobre degradado azul → morado
+            c.round_rect_grad(cx - r, cy - r, r * 2.0, r * 2.0, r, Rgb::u8(66, 133, 244), Rgb::u8(155, 114, 203), 1.0);
+            let t = r * 0.13;
+            c.round_rect(cx - t, cy - r * 0.70, t * 2.0, r * 1.40, t, WHITE, 1.0);
+            c.round_rect(cx - r * 0.70, cy - t, r * 1.40, t * 2.0, t, WHITE, 1.0);
+            c.dot(cx, cy, r * 0.30, WHITE, 1.0, 0.0, 0.0);
+        }
+        "ollama" | "ollama_cloud" => {
+            // llama: orejas, cabeza, ojos y hocico; en Cloud, un punto azul
+            let (light, dark) = (Rgb::u8(244, 244, 246), Rgb::u8(34, 34, 38));
+            c.dot(cx, cy, r, light, 1.0, 0.0, 0.0);
+            for dx in [-0.30f32, 0.30] {
+                c.round_rect(cx + r * dx - r * 0.11, cy - r * 0.78, r * 0.22, r * 0.60, r * 0.11, dark, 1.0);
+            }
+            c.round_rect(cx - r * 0.46, cy - r * 0.40, r * 0.92, r * 1.10, r * 0.40, dark, 1.0);
+            for dx in [-0.20f32, 0.20] {
+                c.dot(cx + r * dx, cy - r * 0.06, r * 0.085, light, 1.0, 0.0, 0.0);
+            }
+            c.round_rect(cx - r * 0.20, cy + r * 0.16, r * 0.40, r * 0.28, r * 0.14, light, 1.0);
+            if p.kind == "ollama_cloud" {
+                c.dot(cx + r * 0.66, cy + r * 0.62, r * 0.30, Rgb::u8(60, 150, 255), 1.0, 0.0, 0.0);
+            }
+        }
+        "lmstudio" => {
+            // cuadrado redondeado morado → azul con tres barras blancas escalonadas
+            c.round_rect_grad(cx - r * 0.92, cy - r * 0.92, r * 1.84, r * 1.84, r * 0.42, Rgb::u8(120, 80, 240), Rgb::u8(70, 110, 250), 1.0);
+            for (i, (x0, x1)) in [(-0.50f32, 0.30f32), (-0.30, 0.52), (-0.50, 0.10)].iter().enumerate() {
+                c.capsule_h(cx + r * x0, cx + r * x1, cy + r * (-0.40 + 0.40 * i as f32), r * 0.11, WHITE, 1.0);
+            }
+        }
         _ => {
             // personalizado: círculo de color con iniciales
             c.dot(cx, cy, r, ai_color(p), 1.0, 0.0, 0.0);
@@ -600,6 +730,10 @@ fn metric_label(key: &str) -> String {
         "premium" => tr("Premium", "Premium").into(),
         "month" => tr("Gasto del mes", "Month spend").into(),
         "usage" => tr("Uso", "Usage").into(),
+        "balance" => tr("Saldo", "Balance").into(),
+        "models" => tr("Modelos cargados", "Loaded models").into(),
+        "cloud_models" => tr("Modelos disponibles", "Available models").into(),
+        "models_available" => tr("Modelos disponibles", "Available models").into(),
         other => other.to_string(),
     }
 }
@@ -614,6 +748,7 @@ fn status_text(s: &str) -> &'static str {
         "bad_key" => tr("clave no válida o sin permisos", "invalid key or no permission"),
         "no_url" => tr("falta la URL", "missing URL"),
         "no_data" => tr("sin datos (sin conexión)", "no data (offline)"),
+        "offline" => tr("servidor apagado o inaccesible", "server not running or unreachable"),
         "no_copilot" => tr("el token de GitHub no tiene acceso a Copilot", "GitHub token has no Copilot access"),
         "" => "",
         _ => tr("consultando…", "checking…"),
@@ -713,6 +848,7 @@ fn paint_system_compact(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::Sta
     c.donut(w / 2.0, h * 0.36, r, (r * 0.32).max(2.5), v / 100.0, col, col.mix(GPU_COL, 0.5), 2.0 * sc);
     c.text("CPU", w / 2.0 - r, h * 0.36 - r, r * 2.0, r * 2.0, (r * 0.62).floor(), 700, "Segoe UI", DIM, DT_CENTER);
     c.text(&format!("{v:.0}%"), 0.0, h * 0.62, w, h * 0.36, (8.5 * sc).min(h * 0.24), 700, "Segoe UI", col, DT_CENTER);
+    level_dot(c, w, sc, sys_level(s));
 }
 
 /// Modo icono de la red: bajada y subida en formato corto sobre la gráfica de bajada
@@ -727,6 +863,7 @@ fn paint_ip_compact(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) 
         c.text(glyph, 1.0 * sc, y, gw, row, (px * 0.95).floor(), 400, "Segoe Fluent Icons", *col, DT_CENTER);
         c.text(&rate_short(*bps), 1.0 * sc + gw, y, w - gw - 2.0 * sc, row, px, 700, "Segoe UI", col.mix(WHITE, 0.35), DT_LEFT);
     }
+    health_dot(c, w, sc);
 }
 
 /// Formato de un panel en la barra: "auto" (icono solo si no cabe), "full" (panel) o "icon"
@@ -894,6 +1031,7 @@ fn paint_system(c: &mut Surface, full_w: f32, h: f32, sc: f32, s: &state::State)
         let ax = x_val + vw + 5.0 * sc;
         c.text(s.app.trim_end_matches(".exe"), ax, y, w - ax - 2.0 * sc, row, (px * 0.85).floor(), 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
     }
+    level_dot(c, full_w, sc, sys_level(s));
 }
 
 // ======================================================================= ventana flotante del sistema
@@ -1020,11 +1158,8 @@ static AI_POPUP_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 
 fn popup_h(kind: Kind) -> f32 {
     match kind {
-        Kind::System => {
-            let (drives, gpus) = { let s = st(); (s.drives.len(), s.gpus.len()) };
-            352.0 + 8.0 + disk_card_h(drives) + 92.0 * (gpus.max(1) - 1) as f32
-        }
-        Kind::Ip => 324.0 + ROUTER_CARD_H + 8.0 + SPEED_CARD_H + 8.0,
+        Kind::System => sys_popup_h(&st()),
+        Kind::Ip => 324.0 + ROUTER_CARD_H + 8.0 + SPEED_CARD_H + 8.0 + if net::health_on() { HEALTH_CARD_H + 8.0 } else { 0.0 },
         Kind::Usage => f32::from_bits(AI_POPUP_H.load(std::sync::atomic::Ordering::Relaxed)).max(120.0),
         Kind::Media => 244.0,
     }
@@ -1133,17 +1268,29 @@ fn ping_color(ms: Option<u32>) -> Rgb {
     }
 }
 
+const ROUTER_W: f32 = 84.0;
+const ROUTER_H: f32 = 74.0;
+
+/// Router con su estado en vivo: ondas si hay Wi-Fi, LED de ping que destella con cada respuesta
+fn draw_router_live(c: &mut Surface, x: f32, y: f32, sc: f32, t: f32) {
+    let wifi = net::INFO.lock().unwrap().as_ref().map(|i| i.wifi).unwrap_or(false);
+    let (flash, online) = {
+        let p = net::PING.lock().unwrap();
+        (p.reply_at.map(|r| (1.0 - r.elapsed().as_secs_f32() / 0.35).clamp(0.0, 1.0)).unwrap_or(0.0), p.last.is_some() || p.sent == 0)
+    };
+    draw_router(c, x, y, ROUTER_W * sc, ROUTER_H * sc, sc, t, online, flash, wifi);
+}
+
 /// Tarjeta del router: imagen, puerta de enlace, DNS, adaptador y ping con gráfica
 fn paint_router_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, t: f32) -> f32 {
     let ch = ROUTER_CARD_H * sc;
     card(c, x, y, cw, ch, sc);
     let info = net::INFO.lock().unwrap().clone();
     let p = net::PING.lock().unwrap().clone();
-    let flash = p.reply_at.map(|r| (1.0 - r.elapsed().as_secs_f32() / 0.35).clamp(0.0, 1.0)).unwrap_or(0.0);
-    let online = p.last.is_some() || p.sent == 0;
-    let wifi = info.as_ref().map(|i| i.wifi).unwrap_or(false);
-    let (rw, rh) = (84.0 * sc, 74.0 * sc);
-    draw_router(c, x + 12.0 * sc, y + (ch - rh) / 2.0, rw, rh, sc, t, online, flash, wifi);
+    let (rw, rh) = (ROUTER_W * sc, ROUTER_H * sc);
+    // el dibujo del router (ondas, LED) es lo único animado de la ventana: zona aparte
+    anim_zone(c, ZONE_ROUTER, x + 12.0 * sc, y + (ch - rh) / 2.0, rw, rh);
+    draw_router_live(c, x + 12.0 * sc, y + (ch - rh) / 2.0, sc, t);
     let tx = x + 12.0 * sc + rw + 14.0 * sc;
     let tw = x + cw - 10.0 * sc - tx;
     let Some(i) = info else {
@@ -1187,6 +1334,117 @@ fn paint_router_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, t: f32) 
     c.text(&stats, tx, gy + 12.0 * sc, tw, 14.0 * sc, 8.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
     let pmax = p.hist.iter().fold(10.0f32, |m, v| m.max(*v)) * 1.2;
     c.sparkline(tx, gy - 2.0 * sc, tw, 16.0 * sc, &p.hist, pmax, pc, 0.9);
+    ch
+}
+
+// ----------------------------------------------------------------------- salud de la conexión
+const HEALTH_CARD_H: f32 = 104.0;
+const HEALTH_BAD: Rgb = Rgb::u8(255, 70, 90);
+
+fn level_color(l: net::Level) -> Rgb {
+    match l {
+        net::Level::Ok => Rgb::u8(60, 230, 140),
+        net::Level::Warn => Rgb::u8(255, 200, 60),
+        net::Level::Bad => HEALTH_BAD,
+        net::Level::Unknown => DIM,
+    }
+}
+
+/// Diagnóstico en una frase y dónde está el problema
+fn health_text(level: net::Level, cause: net::Cause, wifi: bool) -> (&'static str, &'static str) {
+    use net::Cause::*;
+    match cause {
+        NoNetwork => (tr("Sin conexión de red", "No network connection"), tr("Ningún adaptador conectado con puerta de enlace", "No connected adapter with a gateway")),
+        RouterDown => (tr("El router no responde", "Router not responding"), tr("El problema está entre este equipo y el router", "The problem is between this PC and the router")),
+        Local => (
+            if wifi { tr("Wi-Fi inestable", "Unstable Wi-Fi") } else { tr("Red local inestable", "Unstable local network") },
+            tr("El router responde lento o pierde paquetes", "The router replies slowly or drops packets"),
+        ),
+        NoInternet => (tr("Sin acceso a Internet", "No Internet access"), tr("El router responde, pero Internet no (proveedor)", "The router replies but the Internet does not (provider)")),
+        InternetLoss => (tr("Internet con pérdidas", "Internet dropping packets"), tr("La red local va bien: las pérdidas son del proveedor", "Local network is fine: the loss is on the provider side")),
+        InternetSlow => (tr("Internet con latencia alta", "High Internet latency"), tr("La red local va bien: la lentitud es del proveedor", "Local network is fine: the delay is on the provider side")),
+        Dns => (tr("DNS lento", "Slow DNS"), tr("El servidor DNS tarda en responder", "The DNS server is slow to reply")),
+        None if level == net::Level::Ok => (tr("Conexión estable", "Connection stable"), tr("Router, DNS e Internet responden bien", "Router, DNS and Internet respond well")),
+        None => (tr("Midiendo la conexión…", "Measuring connection…"), ""),
+    }
+}
+
+/// Punto de salud de la conexión en la esquina superior derecha del panel de red: discreto si
+/// todo va bien, con halo si hay degradación o corte
+fn health_dot(c: &mut Surface, w: f32, sc: f32) {
+    if !net::health_on() {
+        return;
+    }
+    let (level, _) = net::HEALTH.lock().unwrap().verdict();
+    let col = level_color(level);
+    let (cx, cy) = (w - 4.5 * sc, 4.5 * sc);
+    match level {
+        net::Level::Unknown => {}
+        net::Level::Ok => c.dot(cx, cy, 1.8 * sc, col, 0.9, 0.0, 0.0),
+        net::Level::Warn => c.dot(cx, cy, 2.4 * sc, col, 1.0, 3.0 * sc, 0.5),
+        net::Level::Bad => c.dot(cx, cy, 2.6 * sc, col, 1.0, 4.0 * sc, 0.7),
+    }
+}
+
+/// Tarjeta de salud: diagnóstico y, por tramo (router, DNS, Internet), línea de tiempo de los
+/// últimos 2 minutos (altura = latencia en escala logarítmica; rojo a toda altura = sin respuesta)
+fn paint_health_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
+    let ch = HEALTH_CARD_H * sc;
+    card(c, x, y, cw, ch, sc);
+    let h = net::HEALTH.lock().unwrap().clone();
+    let (level, cause) = h.verdict();
+    let col = level_color(level);
+    let (title, detail) = health_text(level, cause, h.wifi);
+    let bw = badge(c, x + 10.0 * sc, y + 17.0 * sc, tr("CONEXIÓN", "CONNECTION"), 9.0 * sc, Rgb::u8(170, 200, 255), sc, 0.0);
+    c.dot(x + 10.0 * sc + bw + 12.0 * sc, y + 17.0 * sc, 3.0 * sc, col, 1.0, 3.0 * sc, 0.5);
+    let ix = x + 10.0 * sc + bw + 22.0 * sc;
+    c.text(title, ix, y + 5.0 * sc, x + cw - 10.0 * sc - ix, 24.0 * sc, 14.0 * sc, 600, "Segoe UI", col.mix(WHITE, 0.35), DT_LEFT | DT_END_ELLIPSIS);
+    c.text(detail, x + 10.0 * sc, y + 31.0 * sc, cw - 20.0 * sc, 15.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    // color de una muestra según los umbrales del tramo
+    let sample_col = |ms: f32, t1: f32, t2: f32| {
+        if ms < t1 { Rgb::u8(60, 230, 140) } else if ms < t2 { Rgb::u8(255, 210, 90) } else { Rgb::u8(255, 140, 70) }
+    };
+    let hops = [("Router", &h.router, 10.0f32, 50.0f32), ("DNS", &h.dns, 60.0, 150.0), ("Internet", &h.internet, 60.0, 150.0)];
+    let (lx, lw, vw, rh) = (x + 10.0 * sc, 50.0 * sc, 92.0 * sc, 16.0 * sc);
+    let (gx, gw) = (lx + lw, cw - 20.0 * sc - lw - vw - 6.0 * sc);
+    for (k, (name, hop, t1, t2)) in hops.iter().enumerate() {
+        let ry = y + 50.0 * sc + k as f32 * rh;
+        c.text(name, lx, ry, lw, rh, 9.5 * sc, 400, "Segoe UI", Rgb::u8(205, 212, 228), DT_LEFT);
+        let (base, maxh) = (ry + rh - 3.0 * sc, rh - 5.0 * sc);
+        c.fill(gx, base, gw, sc.max(1.0), WHITE, 0.10);
+        let bw = gw / net::HEALTH_SAMPLES as f32;
+        for (i, v) in hop.hist.iter().enumerate() {
+            if *v < 0.0 {
+                continue;
+            }
+            let (hh, scol) = if *v == 0.0 {
+                (maxh, HEALTH_BAD)
+            } else {
+                (maxh * ((1.0 + v).ln() / 301.0f32.ln()).clamp(0.14, 1.0), sample_col(*v, *t1, *t2))
+            };
+            c.fill(gx + i as f32 * bw, base - hh, (bw - 1.0).max(1.0), hh, scol, 0.95);
+        }
+        let (txt, vcol): (String, Rgb) = if hop.target.is_empty() {
+            // sin DNS propio: lo resuelve el router, que ya se mide en su fila
+            (if k == 1 && !h.router.target.is_empty() { "= router".into() } else { "—".into() }, DIM)
+        } else {
+            match hop.recent(10) {
+                None => ("…".into(), DIM),
+                Some(_) if !hop.ever => (tr("no admite ping", "no ping reply").into(), DIM),
+                Some((loss, _)) if loss >= 0.99 => (tr("sin respuesta", "no reply").into(), HEALTH_BAD),
+                Some((loss, ms)) => {
+                    let lat = if ms < 1.5 { "<1 ms".to_string() } else { format!("{:.0} ms", ms - 0.5) };
+                    if loss > 0.0 {
+                        let lcol = if loss >= 0.3 { HEALTH_BAD } else { Rgb::u8(255, 200, 60) };
+                        (format!("{lat} · {:.0}% {}", loss * 100.0, tr("perd.", "loss")), lcol)
+                    } else {
+                        (lat, sample_col(ms, *t1, *t2))
+                    }
+                }
+            }
+        };
+        c.text(&txt, x + cw - 10.0 * sc - vw, ry, vw, rh, 9.5 * sc, 600, "Segoe UI", vcol, DT_RIGHT);
+    }
     ch
 }
 
@@ -1306,10 +1564,20 @@ fn paint_speed_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
 }
 
 // ----------------------------------------------------------------------- Red
-fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32) {
+/// `anim`: entre dos pintados completos solo se repinta el dibujo del router (salvo durante un
+/// speed test, que anima su propia tarjeta)
+fn paint_popup_ip(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32, anim: bool) {
+    if anim && !speedtest::running() && paint_anim(c, sc, s, t) {
+        return;
+    }
+    SYS_ANIM.with(|a| *a.borrow_mut() = ((c.w, c.h), Vec::new()));
     let mut y = popup_frame(c, w, sc, tr("Red", "Network"), &format!("{}: ↓ {}  ↑ {}", tr("sesión", "session"), fmt_bytes(s.sess_down), fmt_bytes(s.sess_up)));
     let pad = 12.0 * sc;
     let (x, cw) = (pad, w - pad * 2.0);
+    // Salud de la conexión: diagnóstico y línea de tiempo por tramo
+    if net::health_on() {
+        y += paint_health_card(c, x, y, cw, sc) + 8.0 * sc;
+    }
     // IP pública
     let ih = 64.0 * sc;
     card(c, x, y, cw, ih, sc);
@@ -1355,8 +1623,8 @@ fn usage_line(c: &mut Surface, x: f32, y: f32, w: f32, sc: f32, label: &str, pct
     c.text(label, x, y, w * 0.6, 16.0 * sc, 10.5 * sc, 400, "Segoe UI", Rgb::u8(215, 220, 232), DT_LEFT);
     c.text(value, x, y, w, 16.0 * sc, 12.0 * sc, 600, "Segoe UI", severity(pct, col), DT_RIGHT);
     let by = y + 22.0 * sc;
-    c.capsule_h(x, x + w, by, 2.5 * sc, WHITE, 0.12);
     if let Some(p) = pct {
+        c.capsule_h(x, x + w, by, 2.5 * sc, WHITE, 0.12);
         c.capsule_h(x, x + (w * (p as f32 / 100.0).clamp(0.0, 1.0)).max(5.0 * sc), by, 2.5 * sc, severity(pct, col), 1.0);
     }
     c.text(note, x, y + 27.0 * sc, w, 14.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
@@ -1417,17 +1685,420 @@ fn paint_popup_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State,
     spectrum(c, style, x0, vy, x1 - x0, vh, sc, &d, &d, ph, pulse);
 }
 
-fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
-    let mut y = popup_frame(c, w, sc, tr("Sistema", "System"), &format!("RAM {:.1}/{:.0} GB", s.ram_used, s.ram_total));
+// ----------------------------------------------------------------------- ventiladores y energía (ventana de sistema)
+const FAN_CARD_H: f32 = 56.0;
+const POWER_CARD_H: f32 = 62.0;
+
+const ZONE_FAN: u8 = 0;
+const ZONE_POWER: u8 = 1;
+const ZONE_ROUTER: u8 = 2;
+
+/// Zona animada de una ventana flotante: qué es, dónde va y el fondo que tenía debajo
+struct AnimZone {
+    kind: u8,
+    x: f32,
+    y: f32,
+    cw: f32,
+    rect: (i32, i32, i32, i32),
+    under: Vec<u32>,
+}
+
+thread_local! {
+    /// Zonas animadas (ventiladores, energía, router) del último pintado completo, con el tamaño
+    /// del lienzo: entre dos pintados completos solo se repintan estas zonas, no la ventana entera
+    static SYS_ANIM: RefCell<((i32, i32), Vec<AnimZone>)> = const { RefCell::new(((0, 0), Vec::new())) };
+}
+
+/// Guarda el fondo de una tarjeta animada antes de dibujarla
+fn anim_zone(c: &mut Surface, kind: u8, x: f32, y: f32, cw: f32, ch: f32) {
+    let (rx, ry, rw, rh, under) = c.copy_rect(x.floor() as i32, y.floor() as i32, cw.ceil() as i32 + 2, ch.ceil() as i32 + 2);
+    let size = (c.w, c.h);
+    SYS_ANIM.with(|a| {
+        let mut a = a.borrow_mut();
+        if a.0 != size {
+            *a = (size, Vec::new());
+        }
+        a.1.push(AnimZone { kind, x, y, cw, rect: (rx, ry, rw, rh), under });
+    });
+}
+
+/// Rectángulos (px de la ventana) de las zonas animadas, para invalidar solo esas
+fn sys_anim_rects() -> Vec<RECT> {
+    SYS_ANIM.with(|a| a.borrow().1.iter().map(|z| RECT { left: z.rect.0, top: z.rect.1, right: z.rect.0 + z.rect.2, bottom: z.rect.1 + z.rect.3 }).collect())
+}
+
+/// Repinta solo las zonas animadas sobre su fondo guardado; false si no hay nada guardado para
+/// este lienzo (hace falta un pintado completo)
+fn paint_anim(c: &mut Surface, sc: f32, s: &state::State, t: f32) -> bool {
+    let zones = SYS_ANIM.with(|a| {
+        let mut a = a.borrow_mut();
+        if a.0 == (c.w, c.h) { std::mem::take(&mut a.1) } else { Vec::new() }
+    });
+    if zones.is_empty() {
+        return false;
+    }
+    for z in &zones {
+        c.put_rect(z.rect.0, z.rect.1, z.rect.2, z.rect.3, &z.under);
+        match z.kind {
+            ZONE_FAN => {
+                paint_fan_card(c, z.x, z.y, z.cw, sc, s, t);
+            }
+            ZONE_POWER => {
+                paint_power_card(c, z.x, z.y, z.cw, sc, s, t);
+            }
+            _ => draw_router_live(c, z.x, z.y, sc, t),
+        }
+    }
+    SYS_ANIM.with(|a| a.borrow_mut().1 = zones);
+    true
+}
+
+thread_local! {
+    /// último instante dibujado y ángulo acumulado de cada rotor (CPU, GPU): al integrar, un cambio
+    /// de rpm cambia la velocidad sin saltos de posición
+    static FAN_SPIN: std::cell::Cell<(f32, [f32; 2])> = const { std::cell::Cell::new((0.0, [0.0; 2])) };
+}
+
+fn has_fans(s: &state::State) -> bool {
+    s.fan_c >= 0 || s.fan_g >= 0
+}
+
+/// Rotor de cinco aspas curvas dentro de un aro
+fn draw_fan(c: &mut Surface, cx: f32, cy: f32, r: f32, ang: f32, col: Rgb, sc: f32) {
+    use std::f32::consts::{PI, TAU};
+    c.ellipse_ring(cx, cy, r, r, 0.0, (1.3 * sc).max(1.0), col, 0.35);
+    for k in 0..5 {
+        let a0 = ang + k as f32 * TAU / 5.0;
+        for j in 0..9 {
+            let f = j as f32 / 8.0;
+            let (rad, a) = (r * (0.24 + 0.56 * f), a0 + f * 0.95);
+            c.dot(cx + rad * a.cos(), cy + rad * a.sin(), r * (0.07 + 0.11 * (PI * f).sin()), col, 0.9, 0.0, 0.0);
+        }
+    }
+    c.dot(cx, cy, r * 0.20, col.mix(WHITE, 0.45), 1.0, 0.0, 0.0);
+}
+
+/// Ventiladores de CPU y GPU: rotor que gira en proporción a las rpm reales y su valor
+fn paint_fan_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, s: &state::State, t: f32) -> f32 {
+    let ch = FAN_CARD_H * sc;
+    card(c, x, y, cw, ch, sc);
+    // 3000 rpm reales no se pueden mostrar (parecería parado): se escala a 1,5 vueltas por segundo
+    let (last, mut ang) = FAN_SPIN.with(|f| f.get());
+    let dt = (t - last).clamp(0.0, 0.2);
+    let fans = [("CPU", s.fan_c, CPU_COL), ("GPU", s.fan_g, GPU_COL)];
+    for (i, (_, rpm, _)) in fans.iter().enumerate() {
+        ang[i] = (ang[i] + dt * std::f32::consts::TAU * (*rpm as f32 / 2000.0).clamp(0.0, 2.5)).rem_euclid(std::f32::consts::TAU);
+    }
+    FAN_SPIN.with(|f| f.set((t, ang)));
+    let hw = cw / 2.0;
+    let r = 17.0 * sc;
+    for (i, (name, rpm, col)) in fans.iter().enumerate() {
+        let x0 = x + i as f32 * hw + 12.0 * sc;
+        let col = if *rpm >= 0 { *col } else { GRAY };
+        draw_fan(c, x0 + r, y + ch / 2.0, r, ang[i], col, sc);
+        let tx = x0 + r * 2.0 + 10.0 * sc;
+        c.text(&format!("{} {name}", tr("VENTILADOR", "FAN")), tx, y + 9.0 * sc, hw - (tx - x0) - 8.0 * sc, 14.0 * sc, 8.5 * sc, 700, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+        let (num, unit) = match *rpm {
+            v if v < 0 => ("—".to_string(), ""),
+            0 => (tr("parado", "stopped").to_string(), ""),
+            v => (v.to_string(), "rpm"),
+        };
+        value_unit(c, tx, y + 24.0 * sc, 22.0 * sc, &num, unit, 15.0 * sc, col.mix(WHITE, 0.3), sc);
+    }
+    ch
+}
+
+fn hm(secs: i32) -> String {
+    format!("{} h {:02} min", secs / 3600, (secs % 3600) / 60)
+}
+
+/// Energía: batería (nivel, carga animada, potencia y autonomía) y plan de energía activo con
+/// flechas que avanzan más o menos rápido según el plan
+fn paint_power_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, s: &state::State, t: f32) -> f32 {
+    let ch = POWER_CARD_H * sc;
+    card(c, x, y, cw, ch, sc);
+    let split = x + cw * 0.54;
+    // ---- batería
+    let (bx, by, bw, bh) = (x + 12.0 * sc, y + 12.0 * sc, 40.0 * sc, 19.0 * sc);
+    let frac = (s.bat_pct as f32 / 100.0).clamp(0.0, 1.0);
+    let col = if !s.bat_present {
+        GRAY
+    } else if s.bat_charging {
+        Rgb::u8(60, 230, 140)
+    } else if s.bat_pct <= 15 {
+        Rgb::u8(255, 70, 90)
+    } else if s.bat_pct <= 30 {
+        Rgb::u8(255, 200, 60)
+    } else {
+        Rgb::u8(110, 215, 150)
+    };
+    c.round_rect(bx, by, bw, bh, 4.5 * sc, WHITE, 0.16);
+    c.round_rect(bx + bw + 1.5 * sc, by + bh * 0.28, 3.0 * sc, bh * 0.44, 1.5 * sc, WHITE, 0.30);
+    let (ix, iw, ih) = (bx + 2.5 * sc, bw - 5.0 * sc, bh - 5.0 * sc);
+    if s.bat_present {
+        let fw = (iw * frac).max(4.0 * sc);
+        c.round_rect(ix, by + 2.5 * sc, fw, ih, 2.5 * sc, col, 1.0);
+        if s.bat_charging {
+            // brillo que recorre la carga de izquierda a derecha
+            let p = (t * 0.7).rem_euclid(1.4) - 0.2;
+            let (sx, sw) = (ix + fw * p, fw * 0.22);
+            let (a, b) = (sx.max(ix), (sx + sw).min(ix + fw));
+            if b > a {
+                c.round_rect(a, by + 2.5 * sc, b - a, ih, 2.0 * sc, WHITE, 0.45);
+            }
+        }
+    }
+    if s.bat_ac {
+        // enchufado: rayo sobre la batería
+        c.raw(|c| c.text("\u{E945}", bx, by, bw, bh, 11.0 * sc, 400, "Segoe Fluent Icons", WHITE, DT_CENTER));
+    }
+    let tx = bx + bw + 12.0 * sc;
+    let tw = split - tx - 6.0 * sc;
+    if s.bat_present {
+        value_unit(c, tx, y + 8.0 * sc, 26.0 * sc, &s.bat_pct.to_string(), "%", 17.0 * sc, col.mix(WHITE, 0.3), sc);
+    } else {
+        c.text(tr("Sin batería", "No battery"), tx, y + 8.0 * sc, tw, 26.0 * sc, 12.0 * sc, 600, "Segoe UI", GAINSBORO, DT_LEFT | DT_END_ELLIPSIS);
+    }
+    let watts = if s.bat_watts.abs() >= 0.5 { format!("  ·  {:.0} W", s.bat_watts.abs()) } else { String::new() };
+    let det = if !s.bat_present {
+        tr("corriente alterna", "AC power").to_string()
+    } else if s.bat_charging {
+        format!("{}{watts}", tr("cargando", "charging"))
+    } else if s.bat_ac {
+        tr("conectado, sin cargar", "plugged in, not charging").to_string()
+    } else if s.bat_secs > 0 {
+        format!("{}{watts}", hm(s.bat_secs))
+    } else {
+        format!("{}{watts}", tr("con batería", "on battery"))
+    };
+    c.text(&det, x + 12.0 * sc, y + 38.0 * sc, split - x - 16.0 * sc, 15.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    // ---- plan de energía
+    c.fill(split, y + 10.0 * sc, sc.max(1.0), ch - 20.0 * sc, WHITE, 0.10);
+    let (pcol, speed) = match s.plan_kind {
+        0 => (Rgb::u8(80, 220, 140), 1.6f32),
+        2 => (Rgb::u8(255, 150, 70), 7.0),
+        _ => (Rgb::u8(110, 170, 255), 3.6),
+    };
+    let (ax, cy, cs) = (split + 12.0 * sc, y + ch / 2.0, 6.0 * sc);
+    for i in 0..3 {
+        let a = 0.22 + 0.78 * (t * speed - i as f32 * 1.0).sin().max(0.0);
+        let x0 = ax + i as f32 * 8.5 * sc;
+        c.line(x0, cy - cs, x0 + cs, cy, 2.2 * sc, pcol, a);
+        c.line(x0 + cs, cy, x0, cy + cs, 2.2 * sc, pcol, a);
+    }
+    let px = ax + 3.0 * 8.5 * sc + 8.0 * sc;
+    let pw = x + cw - 10.0 * sc - px;
+    c.text(tr("PLAN DE ENERGÍA", "POWER PLAN"), px, y + 11.0 * sc, pw, 14.0 * sc, 8.5 * sc, 700, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    let mode = match s.power_mode {
+        -1 => tr("Mejor eficiencia", "Best efficiency"),
+        1 => tr("Mejor rendimiento", "Best performance"),
+        _ => "",
+    };
+    let name = if s.plan_name.is_empty() { "—" } else { s.plan_name.as_str() };
+    c.text(name, px, y + 25.0 * sc, pw, 16.0 * sc, 10.5 * sc, 600, "Segoe UI", pcol.mix(WHITE, 0.35), DT_LEFT | DT_END_ELLIPSIS);
+    if !mode.is_empty() {
+        c.text(mode, px, y + 40.0 * sc, pw, 14.0 * sc, 8.5 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    }
+    ch
+}
+
+// ----------------------------------------------------------------------- estado del sistema (avisos)
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SysAlert {
+    CpuTemp(i32),
+    GpuTemp(i32),
+    /// % de memoria en uso
+    Ram(i32),
+    /// unidad del sistema y GB libres
+    Disk(char, i32),
+    Battery(i32),
+}
+
+/// Temperatura alta sostenida: al menos 25 de los últimos 30 s por encima del umbral (un pico al
+/// abrir un programa no cuenta)
+fn sustained(hist: &[f32], thr: f32) -> bool {
+    hist.len() >= 30 && hist[hist.len() - 30..].iter().filter(|v| **v >= thr).count() >= 25
+}
+
+/// Cosas que merecen atención, cada una con su gravedad (Warn = ámbar, Bad = rojo)
+fn sys_alerts(s: &state::State) -> Vec<(net::Level, SysAlert)> {
+    use net::Level::{Bad, Warn};
+    let mut v = Vec::new();
+    // (aviso, grave): la CPU de un portátil trabaja a más temperatura que la GPU
+    for (hist, now, warn, bad, cpu) in [(&s.hist_cpu_t, s.cpu_t, 95.0, 100.0, true), (&s.hist_gpu_t, s.gpu_t, 86.0, 91.0, false)] {
+        let level = if sustained(hist, bad) { Some(Bad) } else if sustained(hist, warn) { Some(Warn) } else { None };
+        if let Some(l) = level {
+            v.push((l, if cpu { SysAlert::CpuTemp(now) } else { SysAlert::GpuTemp(now) }));
+        }
+    }
+    if s.ram_total > 0.0 {
+        let pct = (s.ram_used / s.ram_total * 100.0).round() as i32;
+        if pct >= 90 {
+            v.push((if pct >= 96 { Bad } else { Warn }, SysAlert::Ram(pct)));
+        }
+    }
+    if let Some(d) = system_drive(s).filter(|d| d.total > 0.0) {
+        let free = d.free / d.total;
+        if free <= 0.10 {
+            v.push((if free <= 0.05 { Bad } else { Warn }, SysAlert::Disk(d.letter, (d.free / 1e9).round() as i32)));
+        }
+    }
+    if s.bat_present && !s.bat_ac && s.bat_pct <= 15 {
+        v.push((if s.bat_pct <= 7 { Bad } else { Warn }, SysAlert::Battery(s.bat_pct)));
+    }
+    v
+}
+
+/// Estado global: el aviso más grave; Unknown hasta que llegan las primeras lecturas
+fn sys_level(s: &state::State) -> net::Level {
+    let a = sys_alerts(s);
+    if a.iter().any(|(l, _)| *l == net::Level::Bad) {
+        net::Level::Bad
+    } else if !a.is_empty() {
+        net::Level::Warn
+    } else if s.cpu < 0.0 {
+        net::Level::Unknown
+    } else {
+        net::Level::Ok
+    }
+}
+
+fn alert_text(a: SysAlert) -> String {
+    match a {
+        SysAlert::CpuTemp(t) if i18n::es() => format!("Temperatura de la CPU alta de forma sostenida ({t} °C)"),
+        SysAlert::CpuTemp(t) => format!("CPU temperature has been high for a while ({t} °C)"),
+        SysAlert::GpuTemp(t) if i18n::es() => format!("Temperatura de la GPU alta de forma sostenida ({t} °C)"),
+        SysAlert::GpuTemp(t) => format!("GPU temperature has been high for a while ({t} °C)"),
+        SysAlert::Ram(p) if i18n::es() => format!("Memoria casi llena ({p} % en uso)"),
+        SysAlert::Ram(p) => format!("Memory almost full ({p}% in use)"),
+        SysAlert::Disk(l, gb) if i18n::es() => format!("Disco {l}: casi lleno ({gb} GB libres)"),
+        SysAlert::Disk(l, gb) => format!("Drive {l}: almost full ({gb} GB free)"),
+        SysAlert::Battery(p) if i18n::es() => format!("Batería baja ({p} %)"),
+        SysAlert::Battery(p) => format!("Battery low ({p}%)"),
+    }
+}
+
+/// Punto de estado en la esquina superior derecha de un panel: discreto en verde, con halo en
+/// ámbar o rojo
+fn level_dot(c: &mut Surface, w: f32, sc: f32, level: net::Level) {
+    let col = level_color(level);
+    let (cx, cy) = (w - 4.5 * sc, 4.5 * sc);
+    match level {
+        net::Level::Unknown => {}
+        net::Level::Ok => c.dot(cx, cy, 1.8 * sc, col, 0.9, 0.0, 0.0),
+        net::Level::Warn => c.dot(cx, cy, 2.4 * sc, col, 1.0, 3.0 * sc, 0.5),
+        net::Level::Bad => c.dot(cx, cy, 2.6 * sc, col, 1.0, 4.0 * sc, 0.7),
+    }
+}
+
+/// Alto (px lógicos) de la franja de avisos de la ventana de sistema (0 si no hay ninguno)
+fn alerts_h(n: usize) -> f32 {
+    if n == 0 { 0.0 } else { 14.0 + 18.0 * n as f32 }
+}
+
+fn paint_alerts(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32, alerts: &[(net::Level, SysAlert)]) -> f32 {
+    let ch = alerts_h(alerts.len()) * sc;
+    card(c, x, y, cw, ch, sc);
+    for (i, (level, a)) in alerts.iter().enumerate() {
+        let ry = y + 7.0 * sc + i as f32 * 18.0 * sc;
+        let col = level_color(*level);
+        c.dot(x + 15.0 * sc, ry + 9.0 * sc, 3.0 * sc, col, 1.0, 3.0 * sc, 0.5);
+        c.text(&alert_text(*a), x + 26.0 * sc, ry, cw - 36.0 * sc, 18.0 * sc, 10.5 * sc, 600, "Segoe UI", col.mix(WHITE, 0.35), DT_LEFT | DT_END_ELLIPSIS);
+    }
+    ch
+}
+
+// ----------------------------------------------------------------------- aplicaciones que más consumen
+const APPS_ROWS: usize = 5;
+const APPS_CARD_H: f32 = 34.0 + 19.0 * APPS_ROWS as f32 + 6.0;
+
+/// Las aplicaciones que más CPU y memoria usan (procesos del mismo programa sumados)
+fn paint_apps_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
+    let ch = APPS_CARD_H * sc;
+    card(c, x, y, cw, ch, sc);
+    let bw = badge(c, x + 10.0 * sc, y + 17.0 * sc, "APPS", 9.0 * sc, Rgb::u8(170, 200, 255), sc, 0.0);
+    c.text(tr("lo que más consume ahora", "top consumers right now"), x + 10.0 * sc + bw + 8.0 * sc, y + 6.0 * sc, cw * 0.5, 22.0 * sc, 10.0 * sc, 400, "Segoe UI", GAINSBORO, DT_LEFT | DT_END_ELLIPSIS);
+    let (mw, pw, barw) = (58.0 * sc, 34.0 * sc, 70.0 * sc);
+    let xm = x + cw - 10.0 * sc - mw; // memoria
+    let xp = xm - pw; // % de CPU
+    let xb = xp - barw - 4.0 * sc; // barra de CPU
+    c.text("CPU", xb, y + 6.0 * sc, barw + pw, 22.0 * sc, 8.5 * sc, 700, "Segoe UI", DIM, DT_RIGHT);
+    c.text(tr("MEMORIA", "MEMORY"), xm, y + 6.0 * sc, mw, 22.0 * sc, 8.5 * sc, 700, "Segoe UI", DIM, DT_RIGHT);
+    let top = sys::TOP.lock().unwrap().clone();
+    if top.is_empty() {
+        c.text(tr("midiendo…", "measuring…"), x + 10.0 * sc, y + 34.0 * sc, cw - 20.0 * sc, 19.0 * sc, 10.0 * sc, 400, "Segoe UI", DIM, DT_LEFT);
+        return ch;
+    }
+    for (i, a) in top.iter().take(APPS_ROWS).enumerate() {
+        let (ry, rh) = (y + (34.0 + 19.0 * i as f32) * sc, 19.0 * sc);
+        let name = if a.procs > 1 { format!("{}  ×{}", a.name, a.procs) } else { a.name.clone() };
+        c.text(&name, x + 10.0 * sc, ry, xb - x - 18.0 * sc, rh, 10.0 * sc, 400, "Segoe UI", Rgb::u8(215, 220, 232), DT_LEFT | DT_END_ELLIPSIS);
+        let col = usage_color(a.cpu, CPU_COL);
+        c.capsule_h(xb, xb + barw, ry + rh / 2.0, 2.0 * sc, WHITE, 0.12);
+        if a.cpu >= 0.5 {
+            c.capsule_h(xb, xb + (barw * (a.cpu / 100.0).clamp(0.0, 1.0)).max(4.0 * sc), ry + rh / 2.0, 2.0 * sc, col, 1.0);
+        }
+        let pct = if a.cpu < 0.5 { "0%".to_string() } else if a.cpu < 10.0 { format!("{:.1}%", a.cpu) } else { format!("{:.0}%", a.cpu) };
+        c.text(&pct, xp, ry, pw, rh, 10.0 * sc, 600, "Segoe UI", col.mix(WHITE, 0.3), DT_RIGHT);
+        let mem = if a.mem >= 1e9 { format!("{:.1} GB", a.mem / 1e9) } else { format!("{:.0} MB", a.mem / 1e6) };
+        c.text(&mem, xm, ry, mw, rh, 10.0 * sc, 600, "Segoe UI", RAM_COL.mix(WHITE, 0.3), DT_RIGHT);
+    }
+    ch
+}
+
+// ----------------------------------------------------------------------- distribución de la ventana de sistema
+/// Ancho de la ventana flotante: la de sistema usa dos columnas de tarjetas
+fn popup_w(kind: Kind) -> f32 {
+    if kind == Kind::System { POPUP_W * 2.0 - 16.0 } else { POPUP_W }
+}
+
+const FPS_CARD_MIN: f32 = 84.0;
+
+/// Alto mínimo (con su separación) de la columna izquierda de la ventana de sistema: CPU, GPU/NPU
+/// y ventiladores
+fn sys_left_h(s: &state::State) -> f32 {
+    92.0 * (1 + s.gpus.len().max(1)) as f32 + if has_fans(s) { FAN_CARD_H + 8.0 } else { 0.0 }
+}
+
+/// Alto de la ventana de sistema. Columna derecha: memoria, discos, energía, aplicaciones y FPS.
+/// Si la izquierda es más larga, la tarjeta de FPS crece; si es más corta, crecen las gráficas de
+/// CPU y GPU: las dos columnas terminan siempre a la misma altura.
+fn sys_popup_h(s: &state::State) -> f32 {
+    let right = 54.0 + disk_card_h(s.drives.len()) + 8.0 + POWER_CARD_H + 8.0 + APPS_CARD_H + 8.0 + FPS_CARD_MIN + 8.0;
+    let n = sys_alerts(s).len();
+    40.0 + if n > 0 { alerts_h(n) + 8.0 } else { 0.0 } + sys_left_h(s).max(right) + 4.0
+}
+
+/// `anim`: entre dos pintados completos (uno por segundo, con los datos nuevos) solo se repintan
+/// las tarjetas animadas
+fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, t: f32, anim: bool) {
+    if anim && paint_anim(c, sc, s, t) {
+        return;
+    }
+    SYS_ANIM.with(|a| *a.borrow_mut() = ((c.w, c.h), Vec::new()));
+    let alerts = sys_alerts(s);
+    let summary = match alerts.len() {
+        0 if s.cpu < 0.0 => String::new(),
+        0 => tr("todo en orden", "all good").to_string(),
+        1 => tr("1 aviso", "1 alert").to_string(),
+        n => format!("{n} {}", tr("avisos", "alerts")),
+    };
+    let mut y = popup_frame(c, w, sc, tr("Sistema", "System"), &summary);
     let pad = 12.0 * sc;
-    let cw = w - pad * 2.0;
-    let x = pad;
+    // avisos a todo el ancho; debajo, dos columnas de tarjetas
+    if !alerts.is_empty() {
+        y += paint_alerts(c, pad, y, w - pad * 2.0, sc, &alerts) + 8.0 * sc;
+    }
+    let cw = (w - pad * 2.0 - 8.0 * sc) / 2.0;
+    let mut x = pad;
+    let y0 = y;
     let small = 9.5 * sc;
     let fan = |v: i32| if v >= 0 { format!("{v} rpm") } else { "—".into() };
     let temp = |t: i32| if t >= 0 { format!("{t} °C") } else { "— °C".into() };
 
-    // ---- CPU
-    let ch = 84.0 * sc;
+    // ---- CPU (las tarjetas con gráfica de la columna izquierda se reparten el alto sobrante)
+    let spare = (h - y0 - 4.0 * sc - sys_left_h(s) * sc).max(0.0);
+    let ch = 84.0 * sc + (spare / (1 + s.gpus.len().max(1)) as f32).floor();
     card(c, x, y, cw, ch, sc);
     card_head(c, x, y, cw, sc, "CPU", &s.cpu_name, &format!("{:.0}", s.cpu.max(0.0)), "%", CPU_COL);
     let ghz = if s.cpu_mhz > 0.0 { format!("≈{:.2} GHz", s.cpu_mhz / 1000.0) } else { "— GHz".into() };
@@ -1484,6 +2155,16 @@ fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State
         y += ch + 8.0 * sc;
     }
 
+    // ---- Ventiladores (si el equipo los expone)
+    if has_fans(s) {
+        anim_zone(c, ZONE_FAN, x, y, cw, FAN_CARD_H * sc);
+        paint_fan_card(c, x, y, cw, sc, s, t);
+    }
+
+    // ---- columna derecha
+    x = pad + cw + 8.0 * sc;
+    y = y0;
+
     // ---- Memoria
     let rh = 46.0 * sc;
     card(c, x, y, cw, rh, sc);
@@ -1497,7 +2178,14 @@ fn paint_popup_system(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State
     // ---- Discos
     y += paint_disk_card(c, x, y, cw, sc, s) + 8.0 * sc;
 
-    // ---- FPS
+    // ---- Energía: batería y plan
+    anim_zone(c, ZONE_POWER, x, y, cw, POWER_CARD_H * sc);
+    y += paint_power_card(c, x, y, cw, sc, s, t) + 8.0 * sc;
+
+    // ---- Aplicaciones que más consumen
+    y += paint_apps_card(c, x, y, cw, sc) + 8.0 * sc;
+
+    // ---- FPS: hasta el final de la ventana
     let fh = h - y - pad;
     card(c, x, y, cw, fh, sc);
     let app = if s.app.is_empty() { tr("sin juego en primer plano", "no game in the foreground").to_string() } else { s.app.trim_end_matches(".exe").to_string() };
@@ -1599,10 +2287,14 @@ unsafe fn paint_popup_window(hwnd: HWND) {
     let hdc = BeginPaint(hwnd, &mut ps);
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
+    // pintado parcial (solo las zonas animadas invalidadas) o completo
+    let p = ps.rcPaint;
+    let mut full = p.left <= 0 && p.top <= 0 && p.right >= rc.right && p.bottom >= rc.bottom;
     let s = st().clone();
     with_app(|app| {
         if app.popup_surf.as_ref().map(|x| x.w != rc.right || x.h != rc.bottom).unwrap_or(true) {
             app.popup_surf = Surface::new(rc.right, rc.bottom);
+            full = true;
         }
         render::set_light(app.light_of(app.popup_tb));
         let sc = app.popup_scale;
@@ -1611,8 +2303,8 @@ unsafe fn paint_popup_window(hwnd: HWND) {
         let (wf, hf) = (rc.right as f32, rc.bottom as f32);
         if let (Some(surf), Some(kind)) = (app.popup_surf.as_mut(), app.popup_kind) {
             match kind {
-                Kind::System => paint_popup_system(surf, wf, hf, sc, &s),
-                Kind::Ip => paint_popup_ip(surf, wf, hf, sc, &s, tt),
+                Kind::System => paint_popup_system(surf, wf, hf, sc, &s, tt, !full),
+                Kind::Ip => paint_popup_ip(surf, wf, hf, sc, &s, tt, !full),
                 Kind::Usage => paint_popup_ai(surf, wf, hf, sc, &AiView::from_cfg(&app.cfg)),
                 Kind::Media => paint_popup_media(surf, wf, hf, sc, &s, &mut app.popup_disp, tt, style),
             }
@@ -1623,9 +2315,13 @@ unsafe fn paint_popup_window(hwnd: HWND) {
 }
 
 /// Registro de diagnóstico (solo si existe %APPDATA%\TaskbarPanels\debug.flag)
-fn dbg(msg: &str) {
+fn dbg_on() -> bool {
     static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| util::appdata_dir().join("debug.flag").exists());
-    if *ON {
+    *ON
+}
+
+fn dbg(msg: &str) {
+    if dbg_on() {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(util::appdata_dir().join("debug.log")) {
             let _ = writeln!(f, "{:?} {msg}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
@@ -1641,7 +2337,9 @@ unsafe fn update_popup() {
     with_app(|app| {
         let inside = |r: &RECT| pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom;
         let mut over: Option<(RECT, f32, isize, Kind)> = None;
-        for p in app.panels.iter() {
+        // lejos de las barras (casi siempre) no hace falta consultar la posición de cada panel
+        let near = app.bars.iter().any(|b| inside(&b.rect));
+        for p in app.panels.iter().filter(|_| near) {
             if !IsWindowVisible(p.hwnd).as_bool() {
                 continue;
             }
@@ -1656,7 +2354,6 @@ unsafe fn update_popup() {
             let _ = GetWindowRect(app.popup, &mut r);
             inside(&r)
         };
-        dbg(&format!("cursor=({},{}) over={:?} shown={} kind={:?} on_popup={on_popup}", pt.x, pt.y, over.map(|o| o.3), app.popup_shown, app.popup_kind));
         match over {
             Some((r, sc, tb_key, kind)) => {
                 let since = *app.hover_since.get_or_insert_with(Instant::now);
@@ -1678,7 +2375,7 @@ unsafe fn update_popup() {
                     }
                     app.popup_scale = sc;
                     app.popup_kind = Some(kind);
-                    let (pw, ph) = ((POPUP_W * sc) as i32, (popup_h(kind) * sc) as i32);
+                    let (pw, ph) = ((popup_w(kind) * sc) as i32, (popup_h(kind) * sc) as i32);
                     let bar = app.bars.iter().find(|b| b.key == tb_key);
                     let mon = bar.map(|b| b.mon).unwrap_or(RECT { left: r.left - pw, top: r.top - ph - 40, right: r.right + pw, bottom: r.bottom + ph + 40 });
                     let gap = (10.0 * sc) as i32;
@@ -1712,15 +2409,37 @@ unsafe fn update_popup() {
         // ventana cerrada hace más de 15 s: liberar su lienzo y el fondo precalculado (~4 MB a 150 %)
         if !app.popup_shown && app.popup_hidden_at.map(|t| t.elapsed().as_secs() >= 15).unwrap_or(false) {
             app.popup_surf = None;
+            SYS_ANIM.with(|a| *a.borrow_mut() = ((0, 0), Vec::new()));
             app.popup_disp = Vec::new();
             app.popup_hidden_at = None;
             schedule_trim(5);
         }
         net::set_active(app.popup_shown && app.popup_kind == Some(Kind::Ip));
-        // multimedia: animación a 60 fps (espectro, progreso); red: ~15 fps (LED y ondas del router)
+        sys::set_procs_active(app.popup_shown && app.popup_kind == Some(Kind::System));
+        // multimedia: animación a 60 fps (espectro, progreso); red: ~15 fps (LED y ondas del router);
+        // sistema: ~20 fps, pero solo las tarjetas animadas (ventiladores y energía), no toda la ventana
         let frame = (app.t0.elapsed().as_millis() / 16) as u64;
-        if app.popup_shown && (app.popup_kind == Some(Kind::Media) || (app.popup_kind == Some(Kind::Ip) && frame % 4 == 0)) {
-            let _ = InvalidateRect(app.popup, None, FALSE);
+        if app.popup_shown {
+            match app.popup_kind {
+                Some(Kind::Media) => {
+                    let _ = InvalidateRect(app.popup, None, FALSE);
+                }
+                Some(Kind::Ip) if frame % 4 == 0 => {
+                    if speedtest::running() {
+                        let _ = InvalidateRect(app.popup, None, FALSE);
+                    } else {
+                        for r in sys_anim_rects() {
+                            let _ = InvalidateRect(app.popup, Some(&r), FALSE);
+                        }
+                    }
+                }
+                Some(Kind::System) if frame % 3 == 0 => {
+                    for r in sys_anim_rects() {
+                        let _ = InvalidateRect(app.popup, Some(&r), FALSE);
+                    }
+                }
+                _ => {}
+            }
         }
     });
 }
@@ -2130,9 +2849,10 @@ fn paint_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, p: &m
         p.caps = vec![0.0; target.len()];
     }
     for i in 0..target.len() {
-        let k = if target[i] > p.disp[i] { 0.45 } else { 0.12 };
-        p.disp[i] += (target[i] - p.disp[i]) * k;
-        p.caps[i] = (p.caps[i] - 0.006).max(p.disp[i]);
+        // constantes pensadas para 60 fps, ajustadas al tiempo real entre fotogramas
+        let k: f32 = if target[i] > p.disp[i] { 0.45 } else { 0.12 };
+        p.disp[i] += (target[i] - p.disp[i]) * (1.0 - (1.0 - k).powf(dt * 60.0));
+        p.caps[i] = (p.caps[i] - 0.006 * dt * 60.0).max(p.disp[i]);
     }
     let pulse = (p.disp.iter().take(6).sum::<f32>() / 6.0).clamp(0.0, 1.0);
     let phase = (t / 14.0).rem_euclid(1.0);
@@ -2219,6 +2939,7 @@ fn paint_ip_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, show_i
         blocks.push(VBlock { label: "IP", value: ip, sub: String::new(), sub_col: DIM, col: GAINSBORO, hist: None, frac: None });
     }
     paint_vblocks(c, w, h, sc, &blocks);
+    health_dot(c, w, sc);
     if show_ip {
         // punto de estado con halo, alineado con la etiqueta "IP"
         let bh = h / 3.0;
@@ -2250,6 +2971,7 @@ fn paint_system_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
         },
     ];
     paint_vblocks(c, w, h, sc, &blocks);
+    level_dot(c, w, sc, sys_level(s));
 }
 
 /// Distribución vertical del multimedia: carátula cuadrada arriba, botones en fila, título y mini espectro
@@ -2345,9 +3067,10 @@ fn paint_media_v(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, p: 
         p.caps = vec![0.0; target.len()];
     }
     for i in 0..target.len() {
-        let k = if target[i] > p.disp[i] { 0.45 } else { 0.12 };
-        p.disp[i] += (target[i] - p.disp[i]) * k;
-        p.caps[i] = (p.caps[i] - 0.006).max(p.disp[i]);
+        // constantes pensadas para 60 fps, ajustadas al tiempo real entre fotogramas
+        let k: f32 = if target[i] > p.disp[i] { 0.45 } else { 0.12 };
+        p.disp[i] += (target[i] - p.disp[i]) * (1.0 - (1.0 - k).powf(dt * 60.0));
+        p.caps[i] = (p.caps[i] - 0.006 * dt * 60.0).max(p.disp[i]);
     }
     let pulse = (p.disp.iter().take(6).sum::<f32>() / 6.0).clamp(0.0, 1.0);
     let (d, cp) = (p.disp.clone(), p.caps.clone());
@@ -2429,6 +3152,24 @@ unsafe fn render(p: &mut Panel, s: &state::State, style: &str, view: &AiView, sh
 }
 
 unsafe fn render_kind(media_only: bool) {
+    // se llama 60 veces por segundo para el multimedia: sin ningún panel multimedia visible no hay
+    // nada que animar (ni estado que copiar); solo se sueltan sus lienzos
+    if media_only {
+        let visible = with_app(|app| {
+            let mut any = false;
+            for p in app.panels.iter_mut().filter(|p| p.kind == Kind::Media) {
+                if IsWindowVisible(p.hwnd).as_bool() {
+                    any = true;
+                } else {
+                    p.surf = None;
+                }
+            }
+            any
+        });
+        if visible != Some(true) {
+            return;
+        }
+    }
     let s = st().clone();
     with_app(|app| {
         let style = spectrum_style(&app.cfg);
@@ -2755,8 +3496,15 @@ const ID_AI_ADD_OPENAI: usize = 160;
 const ID_AI_ADD_ANTHROPIC: usize = 161;
 const ID_AI_ADD_CUSTOM: usize = 162;
 const ID_AI_COPILOT_TOKEN: usize = 164;
+const ID_AI_ADD_DEEPSEEK: usize = 165;
+const ID_AI_ADD_KIMI: usize = 166;
+const ID_AI_ADD_OLLAMA: usize = 167;
+const ID_AI_ADD_OLLAMA_CLOUD: usize = 168;
+const ID_AI_ADD_LMSTUDIO: usize = 169;
+const ID_AI_ADD_GEMINI: usize = 163;
 const ID_AI_REMOVE_BASE: usize = 170;
 const ID_SHOW_IP: usize = 60;
+const ID_NET_HEALTH: usize = 61;
 const ID_POPUP_STYLE_BASE: usize = 80; // +índice de POPUP_STYLES
 const ID_LANG_AUTO: usize = 90;
 const ID_LANG_ES: usize = 91;
@@ -2804,6 +3552,7 @@ unsafe fn show_menu(main: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     let show_ip = with_app(|a| a.cfg.v["IpShowAddress"].as_bool().unwrap_or(true)).unwrap_or(true);
     append(menu, ID_SHOW_IP, tr("Mostrar IP pública", "Show public IP"), show_ip);
+    append(menu, ID_NET_HEALTH, tr("Salud de la conexión", "Connection health"), net::health_on());
     append(menu, ID_COPY_IP, tr("Copiar IP", "Copy IP"), false);
     append(menu, ID_REFRESH_IP, tr("Actualizar IP", "Refresh IP"), false);
     append(menu, ID_REFRESH_USAGE, tr("Actualizar consumo", "Refresh usage"), false);
@@ -2875,6 +3624,12 @@ unsafe fn show_menu(main: HWND) {
         if let Ok(sub) = CreatePopupMenu() {
             append(sub, ID_AI_ADD_OPENAI, tr("API de OpenAI…", "OpenAI API…"), false);
             append(sub, ID_AI_ADD_ANTHROPIC, tr("API de Anthropic…", "Anthropic API…"), false);
+            append(sub, ID_AI_ADD_GEMINI, "Gemini…", false);
+            append(sub, ID_AI_ADD_DEEPSEEK, "DeepSeek…", false);
+            append(sub, ID_AI_ADD_KIMI, "Kimi (Moonshot AI)…", false);
+            append(sub, ID_AI_ADD_OLLAMA, "Ollama (local)…", false);
+            append(sub, ID_AI_ADD_OLLAMA_CLOUD, "Ollama Cloud…", false);
+            append(sub, ID_AI_ADD_LMSTUDIO, "LM Studio…", false);
             append(sub, ID_AI_ADD_CUSTOM, tr("Personalizado (URL JSON)…", "Custom (JSON URL)…"), false);
             append_sub(ai_menu, sub, tr("Agregar proveedor", "Add provider"));
         }
@@ -2940,6 +3695,12 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
         ID_AI_ADD_OPENAI => ai::add_provider_async("openai"),
         ID_AI_ADD_ANTHROPIC => ai::add_provider_async("anthropic_api"),
         ID_AI_ADD_CUSTOM => ai::add_provider_async("custom"),
+        ID_AI_ADD_GEMINI => ai::add_provider_async("gemini"),
+        ID_AI_ADD_DEEPSEEK => ai::add_provider_async("deepseek"),
+        ID_AI_ADD_KIMI => ai::add_provider_async("kimi"),
+        ID_AI_ADD_OLLAMA => ai::add_provider_async("ollama"),
+        ID_AI_ADD_OLLAMA_CLOUD => ai::add_provider_async("ollama_cloud"),
+        ID_AI_ADD_LMSTUDIO => ai::add_provider_async("lmstudio"),
         ID_AI_COPILOT_TOKEN => ai::set_copilot_token_async(),
         ID_OPEN_CLAUDE => util::open_url("https://claude.ai/settings/usage"),
         ID_OPEN_COPILOT => util::open_url("https://github.com/settings/copilot"),
@@ -3002,6 +3763,12 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
             ID_SHOW_IP => {
                 let on = app.cfg.v["IpShowAddress"].as_bool().unwrap_or(true);
                 app.cfg.v["IpShowAddress"] = serde_json::json!(!on);
+                save = true;
+            }
+            ID_NET_HEALTH => {
+                let on = !net::health_on();
+                net::set_health(on);
+                app.cfg.v["NetHealth"] = serde_json::json!(on);
                 save = true;
             }
             ID_AI_PRIMARY_ALL => {
@@ -3087,6 +3854,14 @@ fn schedule_trim(secs: u64) {
 }
 
 unsafe fn on_main_timer(main: HWND) {
+    // diagnóstico (solo con debug.flag): CPU por hilo cada 10 s
+    thread_local! { static PROF_N: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+    if PROF_N.with(|n| { n.set(n.get() + 1); n.get() % 10 == 0 }) {
+        let secs = util::sections_dump(); // se vacía siempre para que no crezca
+        if dbg_on() {
+            dbg(&format!("CPU por hilo (ms en 10 s): {} | secciones ui (ms/veces): {secs}", util::prof_dump()));
+        }
+    }
     if TRIM_AT.with(|t| t.get()).map(|at| Instant::now() >= at).unwrap_or(false) {
         TRIM_AT.with(|t| t.set(None));
         trim_memory();
@@ -3094,7 +3869,22 @@ unsafe fn on_main_timer(main: HWND) {
     // Modo claro/oscuro: se comprueba cada segundo en el color real de cada barra y se aplica en
     // caliente (también a la ventana flotante abierta)
     with_app(|app| {
-        refresh_bar_themes(app);
+        // Leer el color de cada barra captura la pantalla (caro): se hace cada segundo solo durante
+        // los 20 s siguientes a un cambio de modo de Windows o al aparecer una barra nueva; el resto
+        // del tiempo, cada 30 s (por si Explorer repinta tarde una barra que se quedó atascada)
+        thread_local! { static THEME: std::cell::Cell<(Option<bool>, Option<Instant>, Option<Instant>)> = const { std::cell::Cell::new((None, None, None)) }; }
+        let (mut last_sys, mut hot_until, mut sampled) = THEME.with(|t| t.get());
+        let now = Instant::now();
+        let sys = render::system_light();
+        if last_sys != Some(sys) || app.bars.iter().any(|b| !app.bar_light.contains_key(&b.key)) {
+            last_sys = Some(sys);
+            hot_until = Some(now + std::time::Duration::from_secs(20));
+        }
+        if hot_until.is_some_and(|u| now < u) || sampled.map(|s| now.duration_since(s).as_secs() >= 30).unwrap_or(true) {
+            util::timed("1s.color", || refresh_bar_themes(app));
+            sampled = Some(now);
+        }
+        THEME.with(|t| t.set((last_sys, hot_until, sampled)));
         let light = app.light_of(app.popup_tb);
         if app.popup_shown && app.popup_light != Some(light) {
             render::set_light(light);
@@ -3130,11 +3920,11 @@ unsafe fn on_main_timer(main: HWND) {
             }
         }
         app.net_prev = Some((rx, tx, now));
-        sync(app);
+        util::timed("1s.sync", || sync(app));
         st().ip_changed.take()
     })
     .flatten();
-    render_kind(false);
+    util::timed("1s.paneles", || render_kind(false));
     if let Some((true, h)) = with_app(|a| (a.popup_shown, a.popup)) {
         let _ = InvalidateRect(h, None, FALSE);
     }
@@ -3143,7 +3933,11 @@ unsafe fn on_main_timer(main: HWND) {
         (s.ip.clone(), s.isp.clone(), s.city.clone())
     };
     let tip = [format!("{}: {ip}", tr("IP pública", "Public IP")), isp, city].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join("\n");
-    tray_tip(main, &tip);
+    thread_local! { static TIP: RefCell<String> = const { RefCell::new(String::new()) }; }
+    if TIP.with(|t| *t.borrow() != tip) {
+        tray_tip(main, &tip);
+        TIP.with(|t| *t.borrow_mut() = tip.clone());
+    }
     if let Some((old, new, isp)) = balloon {
         tray_balloon(main, tr("Cambió la IP pública", "Public IP changed"), &format!("{old} → {new}\n{isp}"));
     }
@@ -3178,8 +3972,15 @@ unsafe fn on_fast_timer() {
     if RAISE_UNTIL.with(|r| r.get()).map(|u| Instant::now() < u).unwrap_or(false) {
         raise_panels();
     }
-    render_kind(true);
-    update_popup();
+    // multimedia: el espectro se analiza a 30 Hz, así que 30 fps bastan; en pausa no hay nada que
+    // animar salvo la transición del vinilo y el resaltado de los botones: 10 fps
+    thread_local! { static TICK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+    let tick = TICK.with(|t| { t.set(t.get().wrapping_add(1)); t.get() });
+    let every = if st().playing { 2 } else { 6 };
+    if tick % every == 0 {
+        util::timed("media", || render_kind(true));
+    }
+    util::timed("hover", || update_popup());
 }
 
 // ======================================================================= ratón en paneles
@@ -3282,7 +4083,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match msg {
         WM_PAINT => {
             if with_app(|a| a.popup == hwnd).unwrap_or(false) {
-                paint_popup_window(hwnd);
+                util::timed("popup", || paint_popup_window(hwnd));
             } else {
                 let _ = ValidateRect(hwnd, None);
             }
@@ -3290,7 +4091,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_TIMER => {
             match wp.0 {
-                TIMER_MAIN => on_main_timer(hwnd),
+                TIMER_MAIN => util::timed("1s", || on_main_timer(hwnd)),
                 TIMER_FAST => on_fast_timer(),
                 _ => {}
             }
@@ -3468,9 +4269,17 @@ fn demo_state() {
             prov("copilot", "copilot", "GitHub Copilot", "business", vec![m("premium", 12.5, "12.5%", "37 / 300", 16 * 86_400)]),
             prov("openai-1", "openai", "OpenAI API", "API", vec![m("month", 31.8, "$15.90", "$15.90 / $50.00", 17 * 86_400)]),
             prov("custom-1", "custom", "LiteLLM proxy", "", vec![ai::Metric { reset: None, ..m("usage", 64.0, "64%", "", 0) }]),
+            prov("deepseek-1", "deepseek", "DeepSeek", "API", vec![ai::Metric { reset: None, ..m("balance", 27.5, "$7.25", "$7.25 / $10.00", 0) }]),
+            prov("ollama-1", "ollama", "Ollama", "local", vec![ai::Metric { reset: None, pct: None, ..m("models", 0.0, "2/14", "llama3.2:3b, qwen3:8b  ·  9.5 GB", 0) }]),
         ];
     }
     (s.cpu, s.cpu_t, s.gpu, s.gpu_t, s.fps, s.fan_c, s.fan_g) = (38.0, 71, 64, 66, 165, 3100, 2900);
+    (s.bat_present, s.bat_pct, s.bat_ac, s.bat_charging, s.bat_secs, s.bat_watts) = (true, 76, true, true, -1, 64.0);
+    *sys::TOP.lock().unwrap() = [("Game", 31.0, 9.8e9, 1), ("chrome", 6.4, 3.1e9, 24), ("Code", 3.2, 2.2e9, 12), ("obs64", 8.5, 0.9e9, 1), ("Discord", 0.8, 0.6e9, 6)]
+        .into_iter()
+        .map(|(n, cpu, mem, procs)| sys::AppUse { name: n.into(), cpu, mem, procs })
+        .collect();
+    (s.plan_name, s.plan_kind, s.power_mode) = (tr("Equilibrado", "Balanced").into(), 2, 1);
     s.app = "Game.exe".into();
     s.cpu_name = "Intel Core Ultra 9 275HX".into();
     s.gpu_name = "RTX 5090 Laptop GPU".into();
@@ -3536,6 +4345,22 @@ fn demo_state() {
         max: 7,
         sum: 105,
         reply_at: None,
+    };
+    // salud de la conexión: estable, con un par de picos y un paquete perdido antiguo en Internet
+    let demo_hop = |target: &str, base: f32, amp: f32, lost_at: Option<usize>| net::Hop {
+        target: target.into(),
+        hist: (0..net::HEALTH_SAMPLES)
+            .map(|i| if Some(i) == lost_at { 0.0 } else { base + amp * (i as f32 * 0.9).sin().abs() + if i % 17 == 5 { amp * 2.5 } else { 0.0 } })
+            .collect(),
+        ever: true,
+    };
+    *net::HEALTH.lock().unwrap() = net::Health {
+        router: demo_hop("192.168.1.1", 2.5, 3.0, None),
+        dns: demo_hop("1.1.1.1", 11.5, 6.0, None),
+        internet: demo_hop("1.1.1.1", 14.5, 9.0, Some(21)),
+        wifi: true,
+        no_net: false,
+        started: true,
     };
     *media::LEVELS.lock().unwrap() = (0..media::BANDS).map(|i| 0.2 + 0.65 * ((i as f32 * 0.37).sin().abs()) * (1.0 - i as f32 / 90.0)).collect();
 }
@@ -3603,13 +4428,13 @@ fn render_demo_theme(dir: &str, light: bool) {
 
     // ---- ventanas flotantes sobre un fondo degradado (simula el escritorio tras el vidrio)
     for (name, kind) in [("popup-sistema", Kind::System), ("popup-red", Kind::Ip), ("popup-consumo", Kind::Usage), ("popup-multimedia", Kind::Media)] {
-        let (pw, ph) = ((POPUP_W * sc) as i32, (popup_h(kind) * sc) as i32);
+        let (pw, ph) = ((popup_w(kind) * sc) as i32, (popup_h(kind) * sc) as i32);
         let (Some(mut c), Some(mut bg)) = (Surface::new(pw, ph), Surface::new(pw + 48, ph + 48)) else { continue };
         let mut disp = Vec::new();
         for _ in 0..30 {
             match kind {
-                Kind::System => paint_popup_system(&mut c, pw as f32, ph as f32, sc, &s),
-                Kind::Ip => paint_popup_ip(&mut c, pw as f32, ph as f32, sc, &s, 3.0),
+                Kind::System => paint_popup_system(&mut c, pw as f32, ph as f32, sc, &s, 3.0, false),
+                Kind::Ip => paint_popup_ip(&mut c, pw as f32, ph as f32, sc, &s, 3.0, false),
                 Kind::Usage => paint_popup_ai(&mut c, pw as f32, ph as f32, sc, &demo_view),
                 Kind::Media => paint_popup_media(&mut c, pw as f32, ph as f32, sc, &s, &mut disp, 3.0, "wave"),
             }
@@ -3776,10 +4601,14 @@ fn main() {
 
         state::spawn_ip_worker();
         ai::spawn_worker();
+        util::prof("ui");
         sys::spawn_sys_worker();
+        sys::spawn_procs_worker();
         media::spawn_media_worker();
         media::spawn_audio_worker();
         net::spawn_net_worker();
+        net::set_health(with_app(|a| a.cfg.v["NetHealth"].as_bool().unwrap_or(true)).unwrap_or(true));
+        net::spawn_health_worker();
         host::spawn_icons_watcher();
 
         tray_add(main);

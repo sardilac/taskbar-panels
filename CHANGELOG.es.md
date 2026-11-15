@@ -2,6 +2,29 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.4.0
+
+- **Salud de la conexión** (panel de red): cada 2 s se hace ping al router, al servidor DNS y a Internet, y se comparan tramo a tramo para decir dónde está el problema: *Wi-Fi inestable*, *El router no responde*, *Sin acceso a Internet*, *Internet con pérdidas*, *Internet con latencia alta* o *DNS lento*. El panel muestra un punto de estado (verde, ámbar o rojo con halo); la ventana flotante añade una tarjeta con el diagnóstico y una línea de tiempo de 2 minutos de latencia y pérdidas por tramo. Los destinos que nunca responden a ping se excluyen en vez de dar falsas alarmas. Se puede desactivar desde el menú (*Salud de la conexión*) o con `"NetHealth": false`.
+- **Más proveedores de IA** (menú *IA → Agregar proveedor*):
+  - **DeepSeek** y **Kimi (Moonshot AI)**: saldo de la cuenta; con un saldo de referencia opcional (tu última recarga) la barra indica cuánto se ha consumido. Kimi admite el servidor de la plataforma china (`https://api.moonshot.cn`, saldo en yuanes).
+  - **Ollama (local)** y **LM Studio**: modelos cargados en memoria frente a los instalados, con sus nombres (y la memoria en uso en Ollama). Se consulta cada 30 s; la tarjeta avisa si el servidor no está en marcha. La dirección del servidor se puede cambiar para llegar a otro equipo.
+  - **Gemini** y **Ollama Cloud**: ninguno publica el consumo ni la cuota restante, así que se comprueba la clave y se cuentan los modelos disponibles.
+  - Iconos dibujados nuevos para cada uno. Los indicadores sin porcentaje (saldo, número de modelos) usan el color del proveedor y no muestran una barra vacía.
+- **Ventiladores y energía** (ventana de sistema):
+  - **Ventiladores**: una tarjeta con un rotor animado para el ventilador de la CPU y el de la GPU que gira en proporción a las rpm reales, junto a su valor. Solo aparece en equipos que exponen la velocidad de los ventiladores.
+  - **Batería**: nivel con color según la carga, un brillo que la recorre mientras carga, potencia de carga o descarga en vatios y autonomía estimada. En sobremesa se indica *Sin batería*.
+  - **Plan de energía**: nombre del plan activo y, en Windows 11, el modo de energía (*Mejor eficiencia* / *Mejor rendimiento*), con flechas que avanzan despacio en verde en ahorro, en azul en equilibrado y rápido en naranja en alto rendimiento.
+- **Punto de estado del sistema** (panel de sistema): verde si todo va bien, ámbar o rojo con halo cuando algo merece atención, como el de la red. Vigila la temperatura de la CPU y de la GPU (solo si se mantiene alta unos 30 s, no por un pico), la memoria en uso (90 % / 96 %), el espacio libre del disco del sistema (10 % / 5 %) y el nivel de batería sin enchufar (15 % / 7 %). La ventana flotante enumera arriba los avisos activos.
+- **Lo que más consume** (ventana de sistema): las cinco aplicaciones que más CPU y memoria usan en ese momento, con los procesos del mismo programa sumados. Solo se muestrea mientras la ventana está abierta.
+- **Ventana de sistema en dos columnas**: CPU, GPU, NPU y ventiladores a la izquierda; memoria, discos, energía, aplicaciones y FPS a la derecha. Las dos columnas terminan siempre a la misma altura.
+- **Menos consumo de CPU y memoria**:
+  - Las ventanas flotantes repintan solo sus partes animadas (router; ventiladores y energía) entre los repintados completos de cada segundo, en lugar de toda la ventana en cada fotograma.
+  - El panel multimedia se dibuja a 30 fps mientras reproduce (el espectro se analiza a 30 Hz) y a 10 fps en pausa, y no se dibuja si no hay ningún panel multimedia visible. El suavizado del espectro ya no depende de los fotogramas por segundo.
+  - El color de las barras se lee de la pantalla solo durante 20 s tras un cambio de modo de Windows o al aparecer una barra, y cada 30 s el resto del tiempo, en lugar de cada segundo.
+  - El dibujo de texto salta los píxeles vacíos y usa una tabla de cobertura precalculada; el fondo de las ventanas ya no se duplica en memoria en cada repintado.
+  - El observador de iconos de la barra consulta cada 1,5 s con la barra estable (0,7 s durante 10 s tras un cambio), y el texto del icono de la bandeja solo se actualiza cuando cambia.
+  - Con `debug.flag`, `debug.log` registra cada 10 s el tiempo de CPU por hilo y por sección del hilo de interfaz.
+
 ## v1.3.4
 
 - **Modo claro y oscuro**: los paneles y las ventanas flotantes siguen el modo de Windows y cambian al instante. En modo claro cada color se convierte en su equivalente oscuro (se invierte la luminosidad perceptual OKLab conservando el tono), así textos, gráficas e indicadores se leen bien sobre una barra clara; las ventanas flotantes usan tinte claro y el modo claro de DWM. Los iconos de proveedores, la carátula y el vinilo conservan sus colores.

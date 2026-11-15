@@ -188,6 +188,7 @@ pub fn spawn_media_worker() {
     let (tx, rx) = channel();
     *CMD.lock().unwrap() = Some(tx);
     std::thread::spawn(move || unsafe {
+        crate::util::prof("media");
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let mut mgr = None;
         loop {
@@ -282,6 +283,7 @@ unsafe fn drain(c: &Capture, ring: &mut [f32], pos: &mut usize) -> windows::core
 
 pub fn spawn_audio_worker() {
     std::thread::spawn(|| unsafe {
+        crate::util::prof("audio");
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let fft = FftPlanner::<f32>::new().plan_fft_forward(N);
         let window: Vec<f32> = (0..N).map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (N - 1) as f32).cos())).collect();

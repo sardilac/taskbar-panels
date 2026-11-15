@@ -2,6 +2,29 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.4.0
+
+- **Connection health** (network panel): the router, the DNS server and the Internet are pinged every 2 s and compared hop by hop to tell where a problem is — *Unstable Wi-Fi*, *Router not responding*, *No Internet access*, *Internet dropping packets*, *High Internet latency* or *Slow DNS*. The panel shows a status dot (green, amber or red with a glow); the flyout adds a card with the diagnosis and a 2-minute timeline of latency and loss per hop. Targets that never answer pings are left out instead of raising false alarms. Can be turned off from the menu (*Connection health*) or with `"NetHealth": false`.
+- **More AI providers** (menu *AI → Add provider*):
+  - **DeepSeek** and **Kimi (Moonshot AI)**: account balance; with an optional reference balance (your last top-up) the bar shows how much has been used. Kimi accepts the Chinese platform server (`https://api.moonshot.cn`, balance in yuan).
+  - **Ollama (local)** and **LM Studio**: models loaded in memory out of the installed ones, with their names (and memory in use for Ollama). Checked every 30 s; the card says when the server is not running. The server address can be changed to reach another machine.
+  - **Gemini** and **Ollama Cloud**: neither publishes usage or remaining quota, so the key is checked and the available models are counted.
+  - New drawn icons for each one. Indicators without a percentage (balance, model counts) use the provider color and no empty bar.
+- **Fans and power** (system flyout):
+  - **Fans**: a card with an animated rotor for the CPU and the GPU fan that spins in proportion to the real rpm, next to the value. Shown only on machines that expose fan speed.
+  - **Battery**: level with color by charge, a shimmer running across it while charging, charge or discharge power in watts and the estimated time left. Desktops show *No battery*.
+  - **Power plan**: name of the active plan and, on Windows 11, the power mode (*Best efficiency* / *Best performance*), with arrows that advance slowly in green for power saving, in blue for balanced and fast in orange for high performance.
+- **System status dot** (system panel): green when all is well, amber or red with a glow when something needs attention, like the network one. It watches CPU and GPU temperature (only when it stays high for about 30 s, not on a spike), memory in use (90 % / 96 %), free space on the system drive (10 % / 5 %) and battery level when unplugged (15 % / 7 %). The flyout lists the active alerts at the top.
+- **Top consumers** (system flyout): the five apps using the most CPU and memory right now, with the processes of the same program added together. Sampled only while the flyout is open.
+- **System flyout in two columns**: CPU, GPUs, NPU and fans on the left; memory, drives, power, apps and FPS on the right. Both columns always end at the same height.
+- **Lower CPU and memory use**:
+  - Flyouts repaint only their animated parts (router; fans and power) between the once-per-second full repaints, instead of the whole window on every frame.
+  - The media panel is drawn at 30 fps while playing (the spectrum is analyzed at 30 Hz) and at 10 fps while paused, and not at all when no media panel is visible. Spectrum smoothing no longer depends on the frame rate.
+  - Taskbar colors are read from the screen only for 20 s after a Windows mode change or when a taskbar appears, and every 30 s otherwise, instead of every second.
+  - Text rendering skips empty pixels and uses a precomputed coverage table; the flyout background is no longer duplicated in memory on every repaint.
+  - The taskbar icon watcher polls every 1.5 s while the taskbar is stable (0.7 s for 10 s after a change), and the tray tooltip is updated only when its text changes.
+  - With `debug.flag`, `debug.log` now records CPU time per thread and per section of the interface thread every 10 s.
+
 ## v1.3.4
 
 - **Light and dark mode**: panels and flyouts follow the Windows mode and switch on the fly. In light mode every color is converted to its dark counterpart (perceptual OKLab lightness inverted, hue kept), so text, charts and indicators stay readable on a light taskbar; flyouts use a light tint and DWM light mode. Provider icons, album art and the vinyl keep their own colors.

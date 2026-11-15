@@ -1,10 +1,13 @@
 //! Proveedores de IA: consumo de Claude (Claude Code), GitHub Copilot, API de OpenAI, API de
-//! Anthropic y proveedores personalizados (URL JSON).
+//! Anthropic, saldo de DeepSeek y Kimi, modelos de Gemini, Ollama (local y Cloud) y LM Studio, y
+//! proveedores personalizados (URL JSON).
 //!
 //! config.json:
 //!   "AiProviders": [ { "id": "openai-1", "type": "openai", "name": "OpenAI", "enabled": true, "budget": 50 }, ... ]
 //!   "AiPrimary":   "claude" | "<id>" | "all"
-//! Tipos: claude, copilot, openai, anthropic_api, custom (url, percentField, valueField, labelField).
+//! Tipos: claude, copilot, openai, anthropic_api, deepseek, kimi, gemini, ollama, ollama_cloud,
+//! lmstudio (url opcional; budget = saldo de referencia en deepseek/kimi) y custom (url,
+//! percentField, valueField, labelField).
 //! Las claves (admin keys, tokens) se guardan en el Administrador de credenciales de Windows con el
 //! destino "TaskbarPanels:<id>", nunca en config.json.
 
@@ -69,6 +72,12 @@ pub fn default_name(kind: &str) -> &'static str {
         "copilot" => "GitHub Copilot",
         "openai" => "OpenAI API",
         "anthropic_api" => "Anthropic API",
+        "deepseek" => "DeepSeek",
+        "kimi" => "Kimi",
+        "gemini" => "Gemini",
+        "ollama" => "Ollama",
+        "ollama_cloud" => "Ollama Cloud",
+        "lmstudio" => "LM Studio",
         _ => "IA",
     }
 }
@@ -490,6 +499,251 @@ fn fetch_anthropic_api(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> P
     p
 }
 
+// ---------------------------------------------------------------- saldo de cuenta (DeepSeek, Kimi)
+fn base_url(cfg: &ProviderCfg, default: &str) -> String {
+    cfg.v["url"].as_str().map(str::trim).filter(|u| !u.is_empty()).unwrap_or(default).trim_end_matches('/').to_string()
+}
+
+fn cur_money(v: f64, cur: &str) -> String {
+    let sym = match cur {
+        "CNY" => "¥",
+        "USD" => "$",
+        _ => "",
+    };
+    if v >= 1000.0 { format!("{sym}{v:.0}") } else { format!("{sym}{v:.2}") }
+}
+
+/// Saldo restante; con un saldo de referencia (la última recarga) la barra muestra lo consumido
+fn balance_metric(balance: f64, cur: &str, reference: Option<f64>) -> Metric {
+    let reference = reference.filter(|r| *r > 0.0);
+    Metric {
+        label: "balance".into(),
+        pct: reference.map(|r| ((1.0 - balance / r) * 100.0).clamp(0.0, 100.0)),
+        value: cur_money(balance, cur),
+        detail: reference.map(|r| format!("{} / {}", cur_money(balance, cur), cur_money(r, cur))).unwrap_or_default(),
+        reset: None,
+    }
+}
+
+/// Estado de una consulta fallida: clave rechazada, error del servidor o servidor inaccesible
+fn http_status(e: ureq::Error) -> &'static str {
+    match e {
+        ureq::Error::Status(401 | 403, _) => "bad_key",
+        ureq::Error::Status(..) => "no_data",
+        _ => "offline",
+    }
+}
+
+/// GET con la clave del proveedor como Bearer; Err(estado) con bad_key / no_data / offline / invalid
+fn get_json(a: &ureq::Agent, url: &str, key: Option<&str>) -> Result<Value, &'static str> {
+    let mut req = a.get(url);
+    if let Some(k) = key {
+        req = req.set("Authorization", &format!("Bearer {k}"));
+    }
+    req.call().map_err(http_status)?.into_json::<Value>().map_err(|_| "invalid")
+}
+
+/// Estado para un servicio en la nube: sin respuesta = sin conexión, no "servidor apagado"
+fn cloud_status(e: &'static str) -> String {
+    if e == "offline" { "no_data" } else { e }.into()
+}
+
+/// DeepSeek: `{"balance_infos":[{"currency":"USD","total_balance":"110.00",…}]}` → (saldo, moneda)
+fn parse_deepseek(v: &Value) -> Option<(f64, String)> {
+    v["balance_infos"]
+        .as_array()?
+        .iter()
+        .filter_map(|b| Some((as_number(&b["total_balance"])?, b["currency"].as_str().unwrap_or_default().to_string())))
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+fn fetch_deepseek(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> Provider {
+    let mut p = Provider { kind: "deepseek".into(), ..prev.clone() };
+    let Some(key) = cred_read(&cfg.id) else {
+        p.status = "no_key".into();
+        return p;
+    };
+    match get_json(a, &format!("{}/user/balance", base_url(cfg, "https://api.deepseek.com")), Some(&key)) {
+        Ok(v) => match parse_deepseek(&v) {
+            Some((bal, cur)) => {
+                p.metrics = vec![balance_metric(bal, &cur, cfg.v["budget"].as_f64())];
+                p.plan = "API".into();
+                p.status.clear();
+            }
+            None => p.status = "invalid".into(),
+        },
+        Err(e) => p.status = cloud_status(e),
+    }
+    p
+}
+
+/// Kimi (Moonshot AI): `{"data":{"available_balance":49.58,"voucher_balance":…,"cash_balance":…}}`
+fn parse_kimi(v: &Value) -> Option<f64> {
+    as_number(&v["data"]["available_balance"])
+}
+
+fn fetch_kimi(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> Provider {
+    let mut p = Provider { kind: "kimi".into(), ..prev.clone() };
+    let Some(key) = cred_read(&cfg.id) else {
+        p.status = "no_key".into();
+        return p;
+    };
+    let base = base_url(cfg, "https://api.moonshot.ai");
+    // la plataforma china (api.moonshot.cn) factura en yuanes; la internacional, en dólares
+    let cur = if base.contains("moonshot.cn") { "CNY" } else { "USD" };
+    match get_json(a, &format!("{base}/v1/users/me/balance"), Some(&key)) {
+        Ok(v) => match parse_kimi(&v) {
+            Some(bal) => {
+                p.metrics = vec![balance_metric(bal, cur, cfg.v["budget"].as_f64())];
+                p.plan = "API".into();
+                p.status.clear();
+            }
+            None => p.status = "invalid".into(),
+        },
+        Err(e) => p.status = cloud_status(e),
+    }
+    p
+}
+
+// ---------------------------------------------------------------- Gemini (API de Google AI Studio)
+fn count_metric(label: &str, n: usize) -> Metric {
+    Metric { label: label.into(), pct: None, value: n.to_string(), detail: String::new(), reset: None }
+}
+
+/// Modelos de Gemini que generan contenido (se excluyen los de embeddings y similares)
+fn parse_gemini(v: &Value) -> usize {
+    v["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["supportedGenerationMethods"].as_array().is_some_and(|g| g.iter().any(|x| x.as_str() == Some("generateContent"))))
+        .count()
+}
+
+/// La API de Gemini no publica consumo ni cuota restante: se valida la clave y se cuentan los
+/// modelos a los que da acceso
+fn fetch_gemini(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> Provider {
+    let mut p = Provider { kind: "gemini".into(), ..prev.clone() };
+    let Some(key) = cred_read(&cfg.id) else {
+        p.status = "no_key".into();
+        return p;
+    };
+    let url = format!("{}/v1beta/models", base_url(cfg, "https://generativelanguage.googleapis.com"));
+    match a.get(&url).set("x-goog-api-key", &key).query("pageSize", "1000").call() {
+        Ok(r) => match r.into_json::<Value>() {
+            Ok(v) => {
+                p.metrics = vec![count_metric("cloud_models", parse_gemini(&v))];
+                p.plan = "API".into();
+                p.status.clear();
+            }
+            Err(_) => p.status = "invalid".into(),
+        },
+        // una clave no válida se rechaza con 400 (API_KEY_INVALID), no con 401
+        Err(ureq::Error::Status(400, _)) => p.status = "bad_key".into(),
+        Err(e) => p.status = cloud_status(http_status(e)),
+    }
+    p
+}
+
+// ---------------------------------------------------------------- servidores de modelos (Ollama, LM Studio)
+/// Indicador de modelos: valor "cargados/instalados" y, en el detalle, cuáles están cargados
+fn models_metric(loaded: &[String], installed: Option<usize>, mem: f64) -> Metric {
+    let mut detail = loaded.join(", ");
+    if mem > 0.0 {
+        detail = format!("{detail}  ·  {:.1} GB", mem / 1e9);
+    }
+    Metric {
+        label: "models".into(),
+        pct: None,
+        value: installed.map(|n| format!("{}/{n}", loaded.len())).unwrap_or_else(|| loaded.len().to_string()),
+        detail,
+        reset: None,
+    }
+}
+
+/// Ollama: `/api/ps` (modelos en memoria) y `/api/tags` (instalados)
+fn parse_ollama(ps: &Value, tags: Option<&Value>) -> Metric {
+    let models = ps["models"].as_array().cloned().unwrap_or_default();
+    let loaded: Vec<String> = models.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect();
+    let mem: f64 = models.iter().map(|m| m["size"].as_f64().unwrap_or(0.0)).sum();
+    models_metric(&loaded, tags.and_then(|t| t["models"].as_array()).map(|a| a.len()), mem)
+}
+
+fn fetch_ollama(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> Provider {
+    let mut p = Provider { kind: "ollama".into(), ..prev.clone() };
+    let base = base_url(cfg, "http://localhost:11434");
+    let key = cred_read(&cfg.id);
+    match get_json(a, &format!("{base}/api/ps"), key.as_deref()) {
+        Ok(ps) => {
+            let tags = get_json(a, &format!("{base}/api/tags"), key.as_deref()).ok();
+            p.metrics = vec![parse_ollama(&ps, tags.as_ref())];
+            p.plan = "local".into();
+            p.status.clear();
+        }
+        Err(e) => {
+            p.metrics.clear(); // sin servidor no hay modelos cargados: no se conserva lo anterior
+            p.status = e.into();
+        }
+    }
+    p
+}
+
+/// Ollama Cloud (ollama.com): no publica cuota de uso; se valida la clave y se cuentan los modelos
+fn fetch_ollama_cloud(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> Provider {
+    let mut p = Provider { kind: "ollama_cloud".into(), ..prev.clone() };
+    let Some(key) = cred_read(&cfg.id) else {
+        p.status = "no_key".into();
+        return p;
+    };
+    let base = base_url(cfg, "https://ollama.com");
+    // /api/ps exige autenticación (a diferencia de /api/tags): sirve para comprobar la clave
+    if let Err(e @ ("bad_key" | "offline")) = get_json(a, &format!("{base}/api/ps"), Some(&key)) {
+        p.status = cloud_status(e);
+        return p;
+    }
+    match get_json(a, &format!("{base}/api/tags"), Some(&key)) {
+        Ok(t) => {
+            p.metrics = vec![count_metric("cloud_models", t["models"].as_array().map(|a| a.len()).unwrap_or(0))];
+            p.plan = "cloud".into();
+            p.status.clear();
+        }
+        Err(e) => p.status = cloud_status(e),
+    }
+    p
+}
+
+/// LM Studio: `/api/v0/models` → `{"data":[{"id":"…","state":"loaded"|"not-loaded",…}]}`
+fn parse_lmstudio(v: &Value) -> Metric {
+    let models = v["data"].as_array().cloned().unwrap_or_default();
+    let loaded: Vec<String> = models.iter().filter(|m| m["state"].as_str() == Some("loaded")).filter_map(|m| m["id"].as_str().map(String::from)).collect();
+    models_metric(&loaded, Some(models.len()), 0.0)
+}
+
+fn fetch_lmstudio(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> Provider {
+    let mut p = Provider { kind: "lmstudio".into(), ..prev.clone() };
+    let base = base_url(cfg, "http://localhost:1234");
+    let key = cred_read(&cfg.id);
+    let res = match get_json(a, &format!("{base}/api/v0/models"), key.as_deref()) {
+        Ok(v) => Ok(parse_lmstudio(&v)),
+        // versiones sin la API REST propia: la compatible con OpenAI solo lista los modelos
+        Err("no_data") => get_json(a, &format!("{base}/v1/models"), key.as_deref())
+            .map(|v| count_metric("models_available", v["data"].as_array().map(|a| a.len()).unwrap_or(0))),
+        Err(e) => Err(e),
+    };
+    match res {
+        Ok(m) => {
+            p.metrics = vec![m];
+            p.plan = "local".into();
+            p.status.clear();
+        }
+        Err(e) => {
+            p.metrics.clear();
+            p.status = e.into();
+        }
+    }
+    p
+}
+
 // ---------------------------------------------------------------- personalizado (URL JSON)
 fn fetch_custom(a: &ureq::Agent, cfg: &ProviderCfg, prev: &Provider) -> Provider {
     let mut p = Provider { kind: "custom".into(), ..prev.clone() };
@@ -551,6 +805,7 @@ fn every(kind: &str) -> i64 {
     match kind {
         "claude" => 180,
         "custom" => 120,
+        "ollama" | "lmstudio" => 30, // servidores locales: lo cargado cambia a menudo
         _ => 300,
     }
 }
@@ -559,6 +814,7 @@ pub fn spawn_worker() {
     let (tx, rx) = channel();
     *REFRESH.lock().unwrap() = Some(tx);
     std::thread::spawn(move || {
+        crate::util::prof("ai");
         let a = agent();
         let mut gh_token = None;
         let mut last = load_cache();
@@ -582,6 +838,12 @@ pub fn spawn_worker() {
                     "copilot" => fetch_copilot(&a, &prev, &mut gh_token),
                     "openai" => fetch_openai(&a, pc, &prev),
                     "anthropic_api" => fetch_anthropic_api(&a, pc, &prev),
+                    "deepseek" => fetch_deepseek(&a, pc, &prev),
+                    "kimi" => fetch_kimi(&a, pc, &prev),
+                    "gemini" => fetch_gemini(&a, pc, &prev),
+                    "ollama" => fetch_ollama(&a, pc, &prev),
+                    "ollama_cloud" => fetch_ollama_cloud(&a, pc, &prev),
+                    "lmstudio" => fetch_lmstudio(&a, pc, &prev),
                     "custom" => fetch_custom(&a, pc, &prev),
                     _ => continue,
                 };
@@ -698,4 +960,63 @@ pub fn toggle_provider(cfg: &mut Config, id: &str) {
         })
         .collect();
     cfg.v["AiProviders"] = json!(list);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saldo_deepseek() {
+        let v = json!({ "is_available": true, "balance_infos": [
+            { "currency": "CNY", "total_balance": "0.00" },
+            { "currency": "USD", "total_balance": "7.25", "granted_balance": "0.00", "topped_up_balance": "7.25" } ] });
+        let (bal, cur) = parse_deepseek(&v).unwrap();
+        assert_eq!((bal, cur.as_str()), (7.25, "USD"));
+        let m = balance_metric(bal, &cur, Some(10.0));
+        assert_eq!(m.value, "$7.25");
+        assert_eq!(m.detail, "$7.25 / $10.00");
+        assert!((m.pct.unwrap() - 27.5).abs() < 1e-6);
+        assert!(parse_deepseek(&json!({ "error": {} })).is_none());
+    }
+
+    #[test]
+    fn saldo_kimi_sin_referencia() {
+        let v = json!({ "code": 0, "data": { "available_balance": 49.58, "voucher_balance": 46.58, "cash_balance": 3.0 }, "status": true });
+        let m = balance_metric(parse_kimi(&v).unwrap(), "CNY", None);
+        assert_eq!((m.value.as_str(), m.pct, m.detail.as_str()), ("¥49.58", None, ""));
+    }
+
+    #[test]
+    fn saldo_por_encima_de_la_referencia_no_da_negativo() {
+        assert_eq!(balance_metric(25.0, "USD", Some(10.0)).pct, Some(0.0));
+    }
+
+    #[test]
+    fn modelos_gemini_solo_los_generativos() {
+        let v = json!({ "models": [
+            { "name": "models/gemini-pro", "supportedGenerationMethods": ["generateContent", "countTokens"] },
+            { "name": "models/embedding", "supportedGenerationMethods": ["embedContent"] },
+            { "name": "models/gemini-flash", "supportedGenerationMethods": ["generateContent"] } ] });
+        assert_eq!(parse_gemini(&v), 2);
+        assert_eq!(parse_gemini(&json!({})), 0);
+    }
+
+    #[test]
+    fn modelos_ollama() {
+        let ps = json!({ "models": [ { "name": "llama3.2:3b", "size": 3_500_000_000u64 }, { "name": "qwen3:8b", "size": 6_000_000_000u64 } ] });
+        let tags = json!({ "models": [{}, {}, {}, {}] });
+        let m = parse_ollama(&ps, Some(&tags));
+        assert_eq!(m.value, "2/4");
+        assert_eq!(m.detail, "llama3.2:3b, qwen3:8b  ·  9.5 GB");
+        let idle = parse_ollama(&json!({ "models": [] }), None);
+        assert_eq!((idle.value.as_str(), idle.detail.as_str()), ("0", ""));
+    }
+
+    #[test]
+    fn modelos_lmstudio() {
+        let v = json!({ "data": [ { "id": "qwen2.5-7b", "state": "loaded" }, { "id": "nomic-embed", "state": "not-loaded" }, { "id": "phi-4", "state": "not-loaded" } ] });
+        let m = parse_lmstudio(&v);
+        assert_eq!((m.value.as_str(), m.detail.as_str()), ("1/3", "qwen2.5-7b"));
+    }
 }

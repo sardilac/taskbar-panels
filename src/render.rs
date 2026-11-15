@@ -94,6 +94,12 @@ pub fn to_light(c: Rgb) -> Rgb {
     to_rgb(lo).unwrap_or(Rgb(nl * 255.0, nl * 255.0, nl * 255.0))
 }
 
+/// Cobertura del texto (gris 0-255 de GDI → opacidad con gamma 0,85), precalculada
+fn coverage_lut() -> &'static [f32; 256] {
+    static LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| std::array::from_fn(|v| (v as f32 / 255.0).powf(0.85)))
+}
+
 struct Dib {
     dc: HDC,
     bmp: HBITMAP,
@@ -346,12 +352,13 @@ impl Surface {
             let mut rr = RECT { left: 0, top: 0, right: tw, bottom: th };
             DrawTextW(dc, &mut buf, &mut rr, flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             SelectObject(dc, old);
+            let lut = coverage_lut();
             for py in r.top..r.bottom {
                 for px in r.left..r.right {
-                    let v = *bits.add(((py - r.top) * stride + (px - r.left)) as usize);
-                    let cov = (((v >> 8) & 0xFF) as f32 / 255.0).powf(0.85);
-                    if cov > 0.0 {
-                        self.blend(px, py, c, cov);
+                    let v = (*bits.add(((py - r.top) * stride + (px - r.left)) as usize) >> 8) & 0xFF;
+                    // casi todo el rectángulo está vacío: se salta sin calcular nada
+                    if v != 0 {
+                        self.blend(px, py, c, lut[v as usize]);
                     }
                 }
             }
@@ -509,11 +516,12 @@ impl Surface {
             let mut rr = RECT { left: xl, top: 0, right: xl + tw.round() as i32, bottom: y1 - y0 };
             DrawTextW(dc, &mut buf, &mut rr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             SelectObject(dc, old);
+            let lut = coverage_lut();
             for py in y0..y1 {
                 for px in c0..c1 {
-                    let v = *bits.add(((py - y0) * stride + (px - c0)) as usize);
-                    let mut cov = (((v >> 8) & 0xFF) as f32 / 255.0).powf(0.85);
-                    if cov > 0.0 {
+                    let v = (*bits.add(((py - y0) * stride + (px - c0)) as usize) >> 8) & 0xFF;
+                    if v != 0 {
+                        let mut cov = lut[v as usize];
                         let fx = px as f32 + 0.5;
                         if fade > 0.0 {
                             cov *= ((fx - clip0) / fade).clamp(0.0, 1.0) * ((clip1 - fx) / fade).clamp(0.0, 1.0);
@@ -567,12 +575,13 @@ impl Surface {
     pub fn frosted(&mut self, sc: f32, style: &str) {
         let light = is_light();
         let key = format!("{style}{}", if light { ":light" } else { "" });
-        if let Some((st, bg)) = &self.frosted {
-            if *st == key {
-                let bg = bg.clone();
+        if self.frosted.as_ref().is_some_and(|(st, _)| *st == key) {
+            // se saca el fondo precalculado, se copia y se devuelve: sin duplicarlo (varios MB)
+            if let Some((st, bg)) = self.frosted.take() {
                 self.px().copy_from_slice(&bg);
-                return;
+                self.frosted = Some((st, bg));
             }
+            return;
         }
         // (tinte, opacidad del tinte, luz superior, grano)
         // modo claro: tinte claro y más opaco para que el texto oscuro se lea sobre cualquier fondo
@@ -633,6 +642,39 @@ impl Surface {
     /// Copia de los píxeles (BGRA premultiplicado), para pruebas
     pub fn pixels(&mut self) -> Vec<u32> {
         self.px().to_vec()
+    }
+
+    /// Zona (x, y, w, h) recortada al lienzo
+    fn clip_rect(&self, x: i32, y: i32, w: i32, h: i32) -> (i32, i32, i32, i32) {
+        let (x0, y0) = (x.clamp(0, self.w), y.clamp(0, self.h));
+        (x0, y0, (x + w).clamp(x0, self.w) - x0, (y + h).clamp(y0, self.h) - y0)
+    }
+
+    /// Copia de los píxeles de una zona, para restaurarla después con `put_rect`: permite repintar
+    /// solo una parte animada sin redibujar todo lo que hay debajo
+    pub fn copy_rect(&mut self, x: i32, y: i32, w: i32, h: i32) -> (i32, i32, i32, i32, Vec<u32>) {
+        let (x0, y0, cw, ch) = self.clip_rect(x, y, w, h);
+        let sw = self.w;
+        let px = self.px();
+        let mut out = Vec::with_capacity((cw * ch) as usize);
+        for row in y0..y0 + ch {
+            let i = (row * sw + x0) as usize;
+            out.extend_from_slice(&px[i..i + cw as usize]);
+        }
+        (x0, y0, cw, ch, out)
+    }
+
+    /// Restaura una zona guardada con `copy_rect` (copia directa, sin mezcla)
+    pub fn put_rect(&mut self, x: i32, y: i32, w: i32, h: i32, src: &[u32]) {
+        if x < 0 || y < 0 || x + w > self.w || y + h > self.h || src.len() != (w * h) as usize {
+            return;
+        }
+        let sw = self.w;
+        let px = self.px();
+        for row in 0..h {
+            let i = ((y + row) * sw + x) as usize;
+            px[i..i + w as usize].copy_from_slice(&src[(row * w) as usize..((row + 1) * w) as usize]);
+        }
     }
 
     /// Pega una imagen BGRA premultiplicada (sw×sh) en (x, y) con mezcla "over" (para composiciones)

@@ -103,11 +103,11 @@ pub fn monitor_id(h: HWND) -> String {
 
 // ---------------------------------------------------------------- observador de iconos (UI Automation)
 // Las ventanas Win32 heredadas (Start, MSTaskListWClass, TrayNotifyWnd) no siguen bien al taskbar XAML
-// de Windows 11. Un hilo en segundo plano consulta UI Automation cada 0,7 s y deja aquí, por barra,
+// de Windows 11. Un hilo en segundo plano consulta UI Automation (cada 0,7 a 1,5 s) y deja aquí, por barra,
 // la extensión real de los iconos (botón Inicio + aplicaciones) y el borde superior de la bandeja.
 // Así el hilo de la interfaz nunca se bloquea en llamadas UIA.
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct IconInfo {
     icons: RECT,
     tray_top: Option<i32>,
@@ -151,6 +151,7 @@ unsafe fn uia_extent(uia: &windows::Win32::UI::Accessibility::IUIAutomation, hw:
 
 pub fn spawn_icons_watcher() {
     std::thread::spawn(|| unsafe {
+        crate::util::prof("icons");
         use windows::Win32::System::Com::*;
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let Ok(uia) = CoCreateInstance::<_, windows::Win32::UI::Accessibility::IUIAutomation>(
@@ -160,6 +161,7 @@ pub fn spawn_icons_watcher() {
         ) else {
             return;
         };
+        let mut changed_at = std::time::Instant::now();
         loop {
             let bars = WATCH.lock().unwrap().clone();
             // si una consulta falla (p. ej. con el menú contextual de la barra abierto, su hilo está en un
@@ -179,8 +181,14 @@ pub fn spawn_icons_watcher() {
                     }
                 }
             }
+            // UI Automation es cara (recorre todos los elementos de cada barra): tras un cambio se
+            // consulta cada 0,7 s durante 10 s; con la barra estable, cada 1,5 s
+            if fresh != prev {
+                changed_at = std::time::Instant::now();
+            }
             *ICONS.lock().unwrap() = fresh;
-            std::thread::sleep(std::time::Duration::from_millis(700));
+            let fast = changed_at.elapsed() < std::time::Duration::from_secs(10);
+            std::thread::sleep(std::time::Duration::from_millis(if fast { 700 } else { 1500 }));
         }
     });
 }

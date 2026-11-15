@@ -3,7 +3,7 @@
 **English** · [Español](README.es.md)
 
 Modern, lightweight panels for the **Windows 11** taskbar, written in **Rust**:
-network, AI usage (Claude / GitHub Copilot / OpenAI / Anthropic), system (CPU, GPU, FPS, disks) and media.
+network, AI usage (Claude / GitHub Copilot / OpenAI / Anthropic / Gemini / DeepSeek / Kimi / Ollama / LM Studio), system (CPU, GPU, FPS, disks) and media.
 Real transparency, 60 fps animations and frosted-glass flyouts with the details of each panel,
 all in a single process using ~5–10 MB of private memory and less than 1 % of one core.
 
@@ -18,9 +18,9 @@ all in a single process using ~5–10 MB of private memory and less than 1 % of 
 | Panel | On the taskbar | On hover |
 |---|---|---|
 | **Media** (while something is playing or paused) | Album art with an animated vinyl, previous / play / next buttons tinted with the album color, scrolling title, progress and audio spectrum (5 styles: liquid wave, capsule bars, segmented LED, mirrored bars or neon line) | Large album art, title, artist, album, app, times and spectrum |
-| **System** | CPU and GPU (usage + temperature), FPS of the active window and system-drive ring (% used) | CPU model, every GPU (NVIDIA, AMD Radeon, Intel) and the NPU, clocks, fans, VRAM, power, RAM, every drive as a ring and disk I/O charts |
+| **System** | CPU and GPU (usage + temperature), FPS of the active window, system-drive ring (% used) and a **status dot** that turns amber or red when something needs attention | CPU model, every GPU (NVIDIA, AMD Radeon, Intel) and the NPU, clocks, fans, VRAM, power, RAM, every drive as a ring and disk I/O charts, **animated fans** that spin with the real rpm, and **power**: battery (level, charging animation, watts, time left) and the active **power plan**; **alerts** (sustained high temperature, memory or system drive almost full, low battery) and the **apps using the most** CPU and memory. Cards are laid out in two columns |
 | **AI usage** | The primary provider with its icon (or a summary of all of them) | One card per provider: icon, plan, bars, spend and resets (local time) |
-| **Network** | Upload and download with 60 s charts, public IP with status indicator | ISP, location, **country flag** of the IP, router with gateway, DNS, adapter and **gateway ping** (only while the flyout is open), last-minute peaks, session totals and an on-demand **speed test** (Speedtest.net, Cloudflare, LibreSpeed or GCI) |
+| **Network** | Upload and download with 60 s charts, public IP with status indicator and a **connection health** dot (green / amber / red) | **Connection health**: a one-line diagnosis (stable, unstable Wi-Fi, provider issue, slow DNS…) with a 2-minute latency and loss timeline for router, DNS and Internet; ISP, location, **country flag** of the IP, router with gateway, DNS, adapter and **gateway ping** (only while the flyout is open), last-minute peaks, session totals and an on-demand **speed test** (Speedtest.net, Cloudflare, LibreSpeed or GCI) |
 
 <p>
   <img src="docs/images/popup-sistema.png" width="300" alt="System flyout">
@@ -68,6 +68,9 @@ Hardware-dependent features (when unavailable, the panel shows "—"):
 | Claude usage | Signed in to **Claude Code** for that user |
 | Copilot usage | A GitHub token of the account with Copilot: detected automatically from **Git Credential Manager**, **GitHub CLI** (`gh auth login`), the official Copilot plugins or `GH_TOKEN`; otherwise, **AI → GitHub token for Copilot…** menu |
 | OpenAI / Anthropic API spend | An **admin key** for each platform (asked for when adding the provider) |
+| DeepSeek / Kimi (Moonshot AI) account balance | An **API key** for each platform; an optional reference balance (your last top-up) turns the balance into a usage bar |
+| Gemini and Ollama Cloud available models | An **API key**; neither service publishes usage or remaining quota, so only the key is checked and the models are counted |
+| Ollama / LM Studio loaded and installed models | The local server running (`localhost:11434` / `localhost:1234` by default, or any server on your network); no key needed |
 
 ## Installation
 
@@ -127,9 +130,10 @@ Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 - **Displays**: all, primary only or a selection of monitors
 - **Panel format**: system and AI automatic (icon if it does not fit), panel or icon; network as panel or icon
 - **Spectrum style**: liquid wave, capsule bars, segmented LED, mirrored bars or neon line
-- **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, custom JSON URL), remove and **GitHub token for Copilot**
+- **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, Gemini, DeepSeek, Kimi, Ollama local and Cloud, LM Studio, custom JSON URL), remove and **GitHub token for Copilot**
 - **Window background**: frosted glass, clear glass, Windows acrylic, mica or solid (all follow light/dark mode)
 - **Speed test provider**: Speedtest.net, Cloudflare, LibreSpeed or GCI
+- **Connection health**: turn the continuous router / DNS / Internet check on or off
 - **Idioma / Language**: automatic (Windows language), Spanish or English
 - **Reset position**, **Exit**
 
@@ -147,10 +151,11 @@ Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Per-panel selection: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Enable or disable panels |
 | `PanelStyle` | `{ "SystemPanel" / "UsagePanel": "auto" \| "full" \| "icon", "NetworkPanel": "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit). On vertical taskbars the three are icons unless set to `"full"` |
-| `AiProviders` | list of providers | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "custom", "name", "enabled", "budget" }`; custom ones add `url`, `percentField`, `valueField`, `labelField`. Keys go to Windows Credential Manager (`TaskbarPanels:<id>`) |
+| `AiProviders` | list of providers | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "gemini" \| "deepseek" \| "kimi" \| "ollama" \| "ollama_cloud" \| "lmstudio" \| "custom", "name", "enabled", "budget" }`; custom ones add `url`, `percentField`, `valueField`, `labelField`. Keys go to Windows Credential Manager (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` or an `id` | Provider shown on the taskbar |
 | `SpeedTestProvider` | `ookla` (default) / `cloudflare` / `librespeed` / `gci` | Speed-test provider of the network flyout |
 | `IpShowAddress` | `true` / `false` | Show the public IP on the network panel |
+| `NetHealth` | `true` (default) / `false` | Connection health: pings the router, DNS and Internet every 2 s (*Connection health* menu) |
 | `SpectrumStyle` | `"wave"`, `"bars"`, `"led"`, `"mirror"`, `"line"` | Audio spectrum style (panel and flyout) |
 | `MediaWidth` | `400`, `480`, `560` (default), `680`, `800` or any value from 320 to 1200 | Media panel width in logical pixels (*Media panel size* menu); it shrinks automatically if there is not enough room |
 | `Language` | `"auto"`, `"es"`, `"en"` | Interface language (default: the Windows language; Spanish, otherwise English) |
@@ -182,12 +187,12 @@ src/
   render.rs    per-pixel alpha canvas (UpdateLayeredWindow), anti-aliased shapes and text
   host.rs      taskbars (panels are child windows of the taskbar), monitors, orientation, taskbar visibility (Win32 + UI Automation)
   state.rs     shared state and public IP (country confirmed with Cloudflare)
-  ai.rs        AI providers (Claude, Copilot, OpenAI, Anthropic, custom) and credentials
+  ai.rs        AI providers (Claude, Copilot, OpenAI, Anthropic, Gemini, DeepSeek, Kimi, Ollama, LM Studio, custom) and credentials
   speedtest.rs speed test (latency, download, upload): Speedtest.net, Cloudflare, LibreSpeed or GCI
   flags.rs     country flag of the public IP (flagcdn.com, cached locally)
-  net.rs       local network: adapter, gateway, DNS (GetAdaptersAddresses) and ping (IcmpSendEcho)
+  net.rs       local network: adapter, gateway, DNS (GetAdaptersAddresses) and ping (IcmpSendEcho); connection health (per-hop probing and diagnosis)
   gpu.rs       every GPU and NPU: DXGI/DXCore, Windows GPU counters, D3DKMT, NVML
-  sys.rs       CPU/disk (PDH), GPU/NPU via gpu.rs, Lenovo sensors (WMI), FPS (PresentMon), RAM, drives
+  sys.rs       CPU/disk (PDH), GPU/NPU via gpu.rs, Lenovo sensors (WMI), FPS (PresentMon), RAM, drives, battery, power plan and per-app usage
   media.rs     media session (WinRT), album art, timeline and spectrum (WASAPI + FFT)
   i18n.rs      interface language (Spanish / English following Windows)
   config.rs    config.json
@@ -219,9 +224,10 @@ and a fork of `microsoft/winget-pkgs` in the same account.
   - `flagcdn.com` for the country flag, once per country (then cached);
   - `api.anthropic.com/api/oauth/usage` with the Claude Code token, every 3 min;
   - `api.github.com/copilot_internal/user` with your GitHub token, every 5 min;
-  - if you add them: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` (every 5 min) and the URLs of your custom providers (every 2 min);
+  - if you add them: `api.openai.com/v1/organization/costs`, `api.anthropic.com/v1/organizations/cost_report` `generativelanguage.googleapis.com/v1beta/models`, `api.deepseek.com/user/balance`, `api.moonshot.ai/v1/users/me/balance`, `ollama.com/api/ps` and `/api/tags` (every 5 min), your Ollama / LM Studio server (every 30 s) and the URLs of your custom providers (every 2 min);
   - `api.github.com` / `github.com` only during installation, to download PresentMon;
   - ICMP ping to the **local gateway**, only while the network flyout is open;
+  - connection health: one ICMP ping every 2 s to the local gateway, to your DNS server and to `1.1.1.1` (`8.8.8.8` if it does not reply); it can be turned off from the menu (*Connection health*) or with `"NetHealth": false`;
   - the chosen speed-test provider (`speed.cloudflare.com`, Speedtest.net servers via `www.speedtest.net/api/js/servers`, public LibreSpeed servers via `librespeed.org/backend-servers` or `speedtest.gci.co.cr`), only when you press **Start test** in the network flyout (up to ~350 MB).
 - The Claude and Copilot usage endpoints are **undocumented**: they may change without notice.
   If they return an error or a rate limit (429), the last values are kept.

@@ -167,8 +167,208 @@ fn ping(icmp: windows::Win32::Foundation::HANDLE, ip: &str, timeout: u32) -> Opt
     }
 }
 
+// ======================================================================= salud de la conexión
+/// Muestras que se conservan por tramo (una cada 2 s → 2 minutos)
+pub const HEALTH_SAMPLES: usize = 60;
+const HEALTH_EVERY: Duration = Duration::from_secs(2);
+/// Destinos de Internet: basta con que responda uno
+const INTERNET: [&str; 2] = ["1.1.1.1", "8.8.8.8"];
+
+/// Un tramo de la conexión (router, DNS o Internet)
+#[derive(Clone, Default)]
+pub struct Hop {
+    /// destino del ping ("" = no aplica)
+    pub target: String,
+    /// historial: -1 sin muestra, 0 sin respuesta, >0 ms (+0,5); el más reciente al final
+    pub hist: Vec<f32>,
+    /// ha respondido alguna vez: si no, el destino no admite ping y el tramo no se evalúa
+    pub ever: bool,
+}
+
+impl Hop {
+    fn push(&mut self, r: Option<Option<u32>>) {
+        if self.hist.len() != HEALTH_SAMPLES {
+            self.hist = vec![-1.0; HEALTH_SAMPLES];
+        }
+        self.hist.remove(0);
+        self.hist.push(match r {
+            None => -1.0,
+            Some(None) => 0.0,
+            Some(Some(ms)) => {
+                self.ever = true;
+                ms as f32 + 0.5
+            }
+        });
+    }
+    /// (fracción perdida, mediana en ms) de las últimas `n` muestras; None si hay menos de 3
+    pub fn recent(&self, n: usize) -> Option<(f32, f32)> {
+        let v: Vec<f32> = self.hist.iter().rev().take(n).copied().filter(|x| *x >= 0.0).collect();
+        if v.len() < 3 {
+            return None;
+        }
+        let lost = v.iter().filter(|x| **x == 0.0).count() as f32 / v.len() as f32;
+        let mut ok: Vec<f32> = v.into_iter().filter(|x| *x > 0.0).collect();
+        ok.sort_by(|a, b| a.total_cmp(b));
+        Some((lost, ok.get(ok.len() / 2).copied().unwrap_or(0.0)))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Health {
+    pub router: Hop,
+    pub dns: Hop,
+    pub internet: Hop,
+    pub wifi: bool,
+    /// no hay ningún adaptador conectado con puerta de enlace
+    pub no_net: bool,
+    /// ya se hizo al menos una ronda
+    pub started: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Level {
+    Unknown,
+    Ok,
+    Warn,
+    Bad,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cause {
+    None,
+    NoNetwork,
+    /// el router no responde
+    RouterDown,
+    /// el router responde lento o con pérdidas (Wi-Fi o red local)
+    Local,
+    NoInternet,
+    InternetLoss,
+    InternetSlow,
+    Dns,
+}
+
+impl Health {
+    /// Diagnóstico con los últimos 20 s: se mira de cerca a lejos y se culpa al primer tramo que
+    /// falla (si el router va mal, lo de detrás también, y no es culpa del proveedor)
+    pub fn verdict(&self) -> (Level, Cause) {
+        const N: usize = 10;
+        if self.no_net {
+            return (Level::Bad, Cause::NoNetwork);
+        }
+        if !self.started {
+            return (Level::Unknown, Cause::None);
+        }
+        let hop = |h: &Hop| if h.ever { h.recent(N) } else { None };
+        let (r, d, i) = (hop(&self.router), hop(&self.dns), hop(&self.internet));
+        if r.is_none() && i.is_none() && self.internet.recent(N).is_none() {
+            return (Level::Unknown, Cause::None);
+        }
+        if let Some((loss, ms)) = r {
+            if loss >= 0.99 {
+                return (Level::Bad, Cause::RouterDown);
+            }
+            if loss >= 0.3 || ms >= 100.0 {
+                return (Level::Bad, Cause::Local);
+            }
+            if loss >= 0.1 || ms >= 30.0 {
+                return (Level::Warn, Cause::Local);
+            }
+        }
+        match i {
+            Some((loss, ms)) => {
+                if loss >= 0.99 {
+                    return (Level::Bad, Cause::NoInternet);
+                }
+                if loss >= 0.3 {
+                    return (Level::Bad, Cause::InternetLoss);
+                }
+                if ms >= 400.0 {
+                    return (Level::Bad, Cause::InternetSlow);
+                }
+                if loss >= 0.1 {
+                    return (Level::Warn, Cause::InternetLoss);
+                }
+                if ms >= 150.0 {
+                    return (Level::Warn, Cause::InternetSlow);
+                }
+            }
+            // Internet no ha respondido nunca a un ping (red que filtra ICMP): no se puede evaluar
+            None if !self.internet.ever => return (if r.is_some() { Level::Ok } else { Level::Unknown }, Cause::None),
+            None => {}
+        }
+        if let Some((loss, ms)) = d {
+            if loss >= 0.3 || ms >= 150.0 {
+                return (Level::Warn, Cause::Dns);
+            }
+        }
+        (Level::Ok, Cause::None)
+    }
+}
+
+pub static HEALTH: LazyLock<Mutex<Health>> = LazyLock::new(|| Mutex::new(Health::default()));
+static HEALTH_ON: AtomicBool = AtomicBool::new(true);
+
+/// Activa/desactiva el sondeo de salud (clave `NetHealth`); al desactivarlo se borra lo medido
+pub fn set_health(on: bool) {
+    if HEALTH_ON.swap(on, Ordering::Relaxed) && !on {
+        *HEALTH.lock().unwrap() = Health::default();
+    }
+}
+pub fn health_on() -> bool {
+    HEALTH_ON.load(Ordering::Relaxed)
+}
+
+/// Sondeo continuo y ligero (tres pings cada 2 s): router, DNS e Internet
+pub fn spawn_health_worker() {
+    std::thread::spawn(|| {
+        crate::util::prof("health");
+        let icmp = unsafe { IcmpCreateFile() }.ok();
+        let mut info: Option<NetInfo> = None;
+        let mut info_at: Option<Instant> = None;
+        loop {
+            let Some(icmp) = icmp else { return };
+            if !health_on() {
+                info_at = None;
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            let start = Instant::now();
+            if info_at.map(|t| t.elapsed() > Duration::from_secs(10)).unwrap_or(true) {
+                info = read_info();
+                info_at = Some(Instant::now());
+            }
+            let gw = info.as_ref().map(|i| i.gateway.clone());
+            // DNS: el primero IPv4 que no sea el propio router (ese tramo ya se mide)
+            let dns = info.as_ref().and_then(|i| i.dns.iter().find(|d| d.contains('.') && Some(*d) != gw.as_ref()).cloned());
+            let r_gw = gw.as_ref().map(|g| ping(icmp, g, 800));
+            let r_dns = dns.as_ref().map(|d| ping(icmp, d, 800));
+            let r_net = gw.as_ref().map(|_| INTERNET.iter().find_map(|t| ping(icmp, t, 800)));
+            if r_gw == Some(None) {
+                info_at = None; // el router no responde: se relee la red en la siguiente ronda
+            }
+            if health_on() {
+                let mut h = HEALTH.lock().unwrap();
+                h.no_net = info.is_none();
+                h.wifi = info.as_ref().map(|i| i.wifi).unwrap_or(false);
+                h.router.target = gw.unwrap_or_default();
+                h.dns.target = dns.unwrap_or_default();
+                h.internet.target = INTERNET[0].into();
+                h.router.push(r_gw);
+                h.dns.push(r_dns);
+                h.internet.push(r_net);
+                h.started = true;
+            }
+            let el = start.elapsed();
+            if el < HEALTH_EVERY {
+                std::thread::sleep(HEALTH_EVERY - el);
+            }
+        }
+    });
+}
+
 pub fn spawn_net_worker() {
     std::thread::spawn(|| {
+        crate::util::prof("ping");
         let icmp = unsafe { IcmpCreateFile() }.ok();
         let mut info_at: Option<Instant> = None;
         loop {
@@ -210,4 +410,71 @@ pub fn spawn_net_worker() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tramo con `n` muestras recientes: latencia fija y una fracción perdida al final
+    fn hop(ms: u32, lost: usize, n: usize) -> Hop {
+        let mut h = Hop { target: "x".into(), ..Default::default() };
+        for i in 0..n {
+            h.push(Some(if i >= n - lost { None } else { Some(ms) }));
+        }
+        h
+    }
+    fn health(router: Hop, dns: Hop, internet: Hop) -> Health {
+        Health { router, dns, internet, wifi: true, no_net: false, started: true }
+    }
+
+    #[test]
+    fn estable() {
+        assert_eq!(health(hop(2, 0, 10), hop(12, 0, 10), hop(15, 0, 10)).verdict(), (Level::Ok, Cause::None));
+    }
+
+    #[test]
+    fn sin_muestras_aun() {
+        assert_eq!(Health::default().verdict(), (Level::Unknown, Cause::None));
+        assert_eq!(health(hop(2, 0, 2), Hop::default(), hop(15, 0, 2)).verdict(), (Level::Unknown, Cause::None));
+    }
+
+    #[test]
+    fn sin_red() {
+        let mut h = health(hop(2, 0, 10), Hop::default(), hop(15, 0, 10));
+        h.no_net = true;
+        assert_eq!(h.verdict(), (Level::Bad, Cause::NoNetwork));
+    }
+
+    #[test]
+    fn el_router_tiene_prioridad_sobre_internet() {
+        // si el router pierde paquetes, Internet también: la culpa es local
+        assert_eq!(health(hop(3, 4, 10), Hop::default(), hop(20, 5, 10)).verdict(), (Level::Bad, Cause::Local));
+        assert_eq!(health(hop(40, 0, 10), Hop::default(), hop(60, 0, 10)).verdict(), (Level::Warn, Cause::Local));
+        assert_eq!(health(hop(3, 10, 12), Hop::default(), hop(20, 10, 12)).verdict(), (Level::Bad, Cause::RouterDown));
+    }
+
+    #[test]
+    fn proveedor() {
+        assert_eq!(health(hop(2, 0, 10), Hop::default(), hop(20, 10, 12)).verdict(), (Level::Bad, Cause::NoInternet));
+        assert_eq!(health(hop(2, 0, 10), Hop::default(), hop(20, 4, 10)).verdict(), (Level::Bad, Cause::InternetLoss));
+        assert_eq!(health(hop(2, 0, 10), Hop::default(), hop(20, 1, 10)).verdict(), (Level::Warn, Cause::InternetLoss));
+        assert_eq!(health(hop(2, 0, 10), Hop::default(), hop(200, 0, 10)).verdict(), (Level::Warn, Cause::InternetSlow));
+        assert_eq!(health(hop(2, 0, 10), Hop::default(), hop(500, 0, 10)).verdict(), (Level::Bad, Cause::InternetSlow));
+    }
+
+    #[test]
+    fn dns_lento() {
+        assert_eq!(health(hop(2, 0, 10), hop(300, 0, 10), hop(20, 0, 10)).verdict(), (Level::Warn, Cause::Dns));
+    }
+
+    #[test]
+    fn destinos_que_no_admiten_ping_no_cuentan() {
+        // router que nunca responde a ping pero Internet va bien
+        assert_eq!(health(hop(0, 10, 10), Hop::default(), hop(20, 0, 10)).verdict(), (Level::Ok, Cause::None));
+        // red que filtra ICMP hacia fuera: no se puede culpar al proveedor
+        assert_eq!(health(hop(2, 0, 10), Hop::default(), hop(0, 10, 10)).verdict(), (Level::Ok, Cause::None));
+        // nada responde nunca: desconocido, no rojo
+        assert_eq!(health(hop(0, 10, 10), Hop::default(), hop(0, 10, 10)).verdict(), (Level::Unknown, Cause::None));
+    }
 }

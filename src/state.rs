@@ -43,6 +43,22 @@ pub struct State {
     pub fan_c: i32,
     pub fan_g: i32,
     pub fps: u32,
+    // Energía: batería y plan activo
+    pub bat_present: bool,
+    /// carga en % (0-100)
+    pub bat_pct: i32,
+    /// conectado a la corriente
+    pub bat_ac: bool,
+    pub bat_charging: bool,
+    /// autonomía estimada en segundos (-1 = desconocida o conectado)
+    pub bat_secs: i32,
+    /// potencia de carga (+) o descarga (−) en vatios; 0 = desconocida
+    pub bat_watts: f32,
+    pub plan_name: String,
+    /// 0 = ahorro, 1 = equilibrado, 2 = alto rendimiento
+    pub plan_kind: u8,
+    /// modo de energía de Windows 11 sobre el plan: -1 eficiencia, 0 ninguno, 1 rendimiento
+    pub power_mode: i8,
     pub app: String,
     // Detalle del sistema (ventana flotante)
     pub cpu_name: String,
@@ -103,6 +119,8 @@ pub static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
         gpu_t: -1,
         fan_c: -1,
         fan_g: -1,
+        bat_secs: -1,
+        plan_kind: 1,
         title: crate::i18n::tr("Sin reproducción", "Nothing playing").into(),
         ..Default::default()
     })
@@ -169,6 +187,7 @@ pub fn spawn_ip_worker() {
     let (tx, rx) = channel();
     *IP_REFRESH.lock().unwrap() = Some(tx);
     std::thread::spawn(move || {
+        crate::util::prof("ip");
         // COM para decodificar la bandera (WinRT)
         unsafe {
             let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
