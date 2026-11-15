@@ -2,6 +2,14 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.3.4
+
+- **Light and dark mode**: panels and flyouts follow the Windows mode and switch on the fly. In light mode every color is converted to its dark counterpart (perceptual OKLab lightness inverted, hue kept), so text, charts and indicators stay readable on a light taskbar; flyouts use a light tint and DWM light mode. Provider icons, album art and the vinyl keep their own colors.
+- **Each taskbar is checked by its actual on-screen color**: Explorer sometimes leaves a taskbar (usually a secondary one) dark after switching modes; panels on that taskbar keep the dark palette instead of becoming unreadable.
+- The *Dark* flyout background is now *Solid* and follows the mode (`PopupStyle` stays `"dark"`).
+- The speed-test button uses the accent blue with white text in light mode.
+- `--render-demo` also generates the light-mode images (`*-light.png`).
+
 ## v1.3.3
 
 - **Network, AI and system panels can be dragged independently**: each one keeps its own position on the taskbar (previously only the network panel could be dragged and it moved all three together). A panel that reaches another one pushes it, never overlapping; dragging past a neighbor swaps their order. No panel leaves the taskbar or covers the media panel's space, which moves aside or hides when there is no room. `pos.json` now stores per-panel `Offsets` (the old `Gap` is migrated automatically) and *Reset position* groups them back on the right.

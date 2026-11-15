@@ -262,6 +262,97 @@ struct App {
     last_playing: Option<Instant>,
     /// estilo de fondo aplicado a la ventana flotante
     popup_style: String,
+    /// modo claro (true) u oscuro de cada barra según su color real en pantalla: Explorer a veces
+    /// no repinta alguna barra (sobre todo las secundarias) al cambiar el modo de Windows
+    bar_light: std::collections::HashMap<isize, bool>,
+    /// barra del panel cuya ventana flotante está abierta y modo con el que se aplicó su estilo
+    popup_tb: isize,
+    popup_light: Option<bool>,
+}
+
+impl App {
+    /// Modo de una barra: el detectado en pantalla o, si aún no hay muestra, el de Windows
+    fn light_of(&self, tb_key: isize) -> bool {
+        self.bar_light.get(&tb_key).copied().unwrap_or_else(render::system_light)
+    }
+}
+
+/// Luminancia mediana de una línea de píxeles de la barra junto a su borde interior (lejos de los
+/// iconos), saltando las zonas que ocupan nuestros paneles. None si no hay muestras suficientes.
+unsafe fn bar_luma(b: &Taskbar, skip: &[RECT]) -> Option<f32> {
+    let r = b.rect;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    if w <= 8 || h <= 8 {
+        return None;
+    }
+    // horizontal: fila a 3 px del borde interior; vertical: columna a 3 px del borde interior
+    let (x0, y0, cw, ch) = if b.vertical {
+        (if b.side_left { r.right - 4 } else { r.left + 3 }, r.top, 1, h)
+    } else {
+        (r.left, if b.at_top { r.bottom - 4 } else { r.top + 3 }, w, 1)
+    };
+    let screen = GetDC(HWND::default());
+    let mem = CreateCompatibleDC(screen);
+    let bmp = CreateCompatibleBitmap(screen, cw, ch);
+    let old = SelectObject(mem, bmp);
+    let ok = BitBlt(mem, 0, 0, cw, ch, screen, x0, y0, SRCCOPY).is_ok();
+    let mut lum = Vec::new();
+    if ok {
+        let n = cw.max(ch);
+        let step = (n / 64).max(4);
+        for i in (0..n).step_by(step as usize) {
+            let (px, py) = if b.vertical { (0, i) } else { (i, 0) };
+            let (sx, sy) = (x0 + px, y0 + py);
+            if skip.iter().any(|k| sx >= k.left && sx < k.right && sy >= k.top && sy < k.bottom) {
+                continue;
+            }
+            let c = GetPixel(mem, px, py).0;
+            if c == CLR_INVALID {
+                continue;
+            }
+            let (rr, gg, bb) = ((c & 0xFF) as f32, ((c >> 8) & 0xFF) as f32, ((c >> 16) & 0xFF) as f32);
+            lum.push(0.299 * rr + 0.587 * gg + 0.114 * bb);
+        }
+    }
+    SelectObject(mem, old);
+    let _ = DeleteObject(bmp);
+    let _ = DeleteDC(mem);
+    ReleaseDC(HWND::default(), screen);
+    if lum.len() < 6 {
+        return None;
+    }
+    lum.sort_by(|a, b| a.total_cmp(b));
+    Some(lum[lum.len() / 2])
+}
+
+/// Actualiza el modo claro/oscuro de cada barra visible según su color real (con histéresis)
+unsafe fn refresh_bar_themes(app: &mut App) {
+    let fallback = render::system_light();
+    let mut out = std::collections::HashMap::new();
+    for b in &app.bars {
+        let prev = app.bar_light.get(&b.key).copied();
+        let mode = if app.hidden.contains(&b.key) {
+            prev // barra oculta (pantalla completa, autoocultar): se conserva lo último
+        } else {
+            let skip: Vec<RECT> = app
+                .panels
+                .iter()
+                .filter(|p| p.tb_key == b.key && IsWindowVisible(p.hwnd).as_bool())
+                .map(|p| {
+                    let mut r = RECT::default();
+                    let _ = GetWindowRect(p.hwnd, &mut r);
+                    r
+                })
+                .collect();
+            match bar_luma(b, &skip) {
+                Some(l) if l >= 150.0 => Some(true),
+                Some(l) if l <= 110.0 => Some(false),
+                _ => prev, // dudoso (fondo semitransparente sobre el escritorio): se mantiene
+            }
+        };
+        out.insert(b.key, mode.unwrap_or(fallback));
+    }
+    app.bar_light = out;
 }
 
 thread_local! {
@@ -433,8 +524,13 @@ fn ai_color(p: &ai::Provider) -> Rgb {
     }
 }
 
-/// Icono estilizado de cada proveedor (dibujado, no son los logotipos oficiales)
+/// Icono estilizado de cada proveedor (dibujado, no son los logotipos oficiales). Conserva sus
+/// colores propios también en modo claro.
 fn draw_ai_icon(c: &mut Surface, p: &ai::Provider, cx: f32, cy: f32, r: f32) {
+    c.raw(|c| draw_ai_icon_colors(c, p, cx, cy, r));
+}
+
+fn draw_ai_icon_colors(c: &mut Surface, p: &ai::Provider, cx: f32, cy: f32, r: f32) {
     use std::f32::consts::TAU;
     match p.kind.as_str() {
         "claude" => {
@@ -1188,14 +1284,16 @@ fn paint_speed_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
         POPUP_HITS.with(|h| h.borrow_mut().retain(|r| r.4 != ACT_SPEEDTEST));
     } else {
         let hover = POPUP_HOVER.with(|h| h.get()) == ACT_SPEEDTEST;
-        let fill = Rgb::u8(60, 160, 255);
-        c.round_rect(bx, by, bw, bh, bh / 2.0, fill, if hover { 0.95 } else { 0.75 });
+        // botón sólido: en modo claro, azul de acento oscuro con texto blanco (sin adaptar)
+        let light = render::is_light();
+        let fill = if light { Rgb::u8(0, 95, 184) } else { Rgb::u8(60, 160, 255) };
+        c.raw(|c| c.round_rect(bx, by, bw, bh, bh / 2.0, fill, if hover || light { 0.95 } else { 0.75 }));
         let label = match s.phase {
             Phase::Idle => tr("Iniciar prueba", "Start test"),
             Phase::Error => tr("Reintentar (error)", "Retry (error)"),
             _ => tr("Probar de nuevo", "Test again"),
         };
-        c.text(label, bx, by, bw, bh, 10.0 * sc, 600, "Segoe UI", WHITE, DT_CENTER);
+        c.raw(|c| c.text(label, bx, by, bw, bh, 10.0 * sc, 600, "Segoe UI", WHITE, DT_CENTER));
         let note = if s.phase == Phase::Error && !s.error.is_empty() { s.error.clone() } else if meta.is_empty() { tr("usa hasta ~350 MB", "uses up to ~350 MB").to_string() } else { meta.clone() };
         c.text(&note, bx, by - 15.0 * sc, bw, 13.0 * sc, 8.0 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
         POPUP_HITS.with(|h| {
@@ -1440,7 +1538,7 @@ const POPUP_STYLES: [(&str, &str); 5] = [
     ("clear", "Cristal transparente|Clear glass"),
     ("acrylic", "Acrílico de Windows|Windows acrylic"),
     ("mica", "Mica|Mica"),
-    ("dark", "Oscuro|Dark"),
+    ("dark", "Opaco|Solid"),
 ];
 
 fn popup_style(cfg: &Config) -> String {
@@ -1449,15 +1547,19 @@ fn popup_style(cfg: &Config) -> String {
 }
 
 /// Aplica el fondo de DWM según el estilo: desenfoque con tinte (acento), desenfoque sin tinte,
-/// acrílico o mica del sistema, u opaco
+/// acrílico o mica del sistema, u opaco. Sigue el modo claro/oscuro de Windows.
 unsafe fn apply_popup_style(h: HWND, style: &str) {
     use windows::Win32::Graphics::Dwm::*;
+    let light = render::is_light();
+    let dark: i32 = if light { 0 } else { 1 };
+    let _ = DwmSetWindowAttribute(h, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as *const _, 4);
     // (estado del acento, tinte AABBGGRR, fondo del sistema DWMSBT)
     let (accent, gradient, backdrop): (i32, u32, i32) = match style {
         "clear" => (3, 0, 1),           // ACCENT_ENABLE_BLURBEHIND, DWMSBT_NONE
         "acrylic" => (0, 0, 3),         // DWMSBT_TRANSIENTWINDOW
         "mica" => (0, 0, 2),            // DWMSBT_MAINWINDOW
         "dark" => (0, 0, 1),            // sin desenfoque
+        _ if light => (4, 0x30FA_F8F6, 1), // ACCENT_ENABLE_ACRYLICBLURBEHIND, tinte claro ~19 %
         _ => (4, 0x1A18_1210, 1),       // ACCENT_ENABLE_ACRYLICBLURBEHIND, tinte azulado ~10 %
     };
     set_accent(h, accent, gradient);
@@ -1484,9 +1586,7 @@ unsafe fn ensure_popup(app: &mut App) -> HWND {
     ) else {
         return HWND::default();
     };
-    let one: i32 = 1;
     let round: i32 = 2; // DWMWCP_ROUND
-    let _ = DwmSetWindowAttribute(h, DWMWA_USE_IMMERSIVE_DARK_MODE, &one as *const _ as *const _, 4);
     let _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as *const _, 4);
     let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
     let _ = DwmExtendFrameIntoClientArea(h, &m);
@@ -1504,6 +1604,7 @@ unsafe fn paint_popup_window(hwnd: HWND) {
         if app.popup_surf.as_ref().map(|x| x.w != rc.right || x.h != rc.bottom).unwrap_or(true) {
             app.popup_surf = Surface::new(rc.right, rc.bottom);
         }
+        render::set_light(app.light_of(app.popup_tb));
         let sc = app.popup_scale;
         let tt = app.t0.elapsed().as_secs_f32();
         let style = spectrum_style(&app.cfg);
@@ -1566,7 +1667,11 @@ unsafe fn update_popup() {
                         return;
                     }
                     let style = popup_style(&app.cfg);
-                    if style != app.popup_style {
+                    app.popup_tb = tb_key;
+                    let light = app.light_of(tb_key);
+                    render::set_light(light);
+                    if style != app.popup_style || app.popup_light != Some(light) {
+                        app.popup_light = Some(light);
                         apply_popup_style(h, &style);
                         POPUP_STYLE.with(|s| *s.borrow_mut() = style.clone());
                         app.popup_style = style;
@@ -2331,8 +2436,10 @@ unsafe fn render_kind(media_only: bool) {
         AI_POPUP_H.store(ai_popup_h(&view).to_bits(), std::sync::atomic::Ordering::Relaxed);
         let show_ip = app.cfg.v["IpShowAddress"].as_bool().unwrap_or(true);
         let t = app.t0.elapsed().as_secs_f32();
+        let lights = app.bar_light.clone();
         for p in app.panels.iter_mut() {
             if (p.kind == Kind::Media) == media_only {
+                render::set_light(lights.get(&p.tb_key).copied().unwrap_or_else(render::system_light));
                 render(p, &s, style, &view, show_ip, t);
             }
         }
@@ -2984,6 +3091,18 @@ unsafe fn on_main_timer(main: HWND) {
         TRIM_AT.with(|t| t.set(None));
         trim_memory();
     }
+    // Modo claro/oscuro: se comprueba cada segundo en el color real de cada barra y se aplica en
+    // caliente (también a la ventana flotante abierta)
+    with_app(|app| {
+        refresh_bar_themes(app);
+        let light = app.light_of(app.popup_tb);
+        if app.popup_shown && app.popup_light != Some(light) {
+            render::set_light(light);
+            apply_popup_style(app.popup, &app.popup_style);
+            app.popup_light = Some(light);
+            let _ = InvalidateRect(app.popup, None, FALSE);
+        }
+    });
     // Red: velocidad del último segundo
     let (rx, tx) = net_bytes();
     let balloon = with_app(|app| {
@@ -3425,15 +3544,24 @@ fn demo_panel(kind: Kind) -> Panel {
     Panel { hwnd: HWND::default(), parent: HWND::default(), kind, tb_key: 0, scale: 1.5, caps: vec![], disp: vec![], hover: -1, surf: None, vertical: false, compact: false, vinyl: 1.0, spin: 0.6, last_t: 0.0 }
 }
 
-/// `taskbar-panels.exe --render-demo <carpeta>`: genera las imágenes del README con datos ficticios
+/// `taskbar-panels.exe --render-demo <carpeta>`: genera las imágenes en modo oscuro y, con el
+/// sufijo `-light`, en modo claro
 fn render_demo(dir: &str) {
     demo_state();
+    for light in [false, true] {
+        render::set_light(light);
+        render_demo_theme(dir, light);
+    }
+}
+
+fn render_demo_theme(dir: &str, light: bool) {
+    let sfx = if light { "-light" } else { "" };
     let s = st().clone();
     let demo_view = AiView { list: ai::AI.lock().unwrap().clone(), primary: "claude".into() };
     AI_POPUP_H.store(ai_popup_h(&demo_view).to_bits(), std::sync::atomic::Ordering::Relaxed);
     let sc = 1.5f32;
     let tb_h = 72;
-    let bar_bg = (26u8, 30u8, 48u8);
+    let bar_bg = if light { (238u8, 240u8, 245u8) } else { (26u8, 30u8, 48u8) };
 
     // ---- barra horizontal: multimedia a la izquierda, sistema · consumo · red a la derecha
     let widths = [(Kind::Media, 660.0), (Kind::System, 236.0), (Kind::Usage, 150.0), (Kind::Ip, 112.0)];
@@ -3458,8 +3586,8 @@ fn render_demo(dir: &str) {
     let right_w: i32 = parts.iter().filter(|p| p.0 != Kind::Media).map(|p| p.1 + gap).sum();
     let strip_w = 18 + parts[0].1 + 120 + right_w + 12;
     if let Some(mut strip) = Surface::new(strip_w, tb_h) {
-        strip.fill(0.0, 0.0, strip_w as f32, tb_h as f32, Rgb::u8(bar_bg.0, bar_bg.1, bar_bg.2), 1.0);
-        strip.fill(0.0, 0.0, strip_w as f32, 1.0, WHITE, 0.08);
+        strip.raw(|c| c.fill(0.0, 0.0, strip_w as f32, tb_h as f32, Rgb::u8(bar_bg.0, bar_bg.1, bar_bg.2), 1.0));
+        strip.raw(|c| c.fill(0.0, 0.0, strip_w as f32, 1.0, if light { Rgb(0.0, 0.0, 0.0) } else { WHITE }, 0.08));
         strip.paste(18, 0, &parts[0].2, parts[0].1, tb_h);
         let mut x = strip_w - 12;
         for (kind, w, px) in parts.iter().rev() {
@@ -3470,7 +3598,7 @@ fn render_demo(dir: &str) {
             strip.paste(x, 0, px, *w, tb_h);
             x -= gap;
         }
-        save_bmp(&format!("{dir}\\barra.bmp"), &mut strip, bar_bg);
+        save_bmp(&format!("{dir}\\barra{sfx}.bmp"), &mut strip, bar_bg);
     }
 
     // ---- ventanas flotantes sobre un fondo degradado (simula el escritorio tras el vidrio)
@@ -3486,12 +3614,17 @@ fn render_demo(dir: &str) {
                 Kind::Media => paint_popup_media(&mut c, pw as f32, ph as f32, sc, &s, &mut disp, 3.0, "wave"),
             }
         }
-        bg.gradient_bg(Rgb::u8(58, 34, 92), Rgb::u8(24, 46, 96));
+        if light {
+            bg.gradient_bg(Rgb::u8(176, 198, 236), Rgb::u8(226, 204, 240));
+        } else {
+            bg.gradient_bg(Rgb::u8(58, 34, 92), Rgb::u8(24, 46, 96));
+        }
         // simulación del desenfoque del escritorio: tinte uniforme bajo el vidrio
-        bg.round_rect(24.0, 24.0, pw as f32, ph as f32, 8.0 * sc, Rgb::u8(40, 42, 60), 0.55);
+        let glass = if light { Rgb::u8(240, 242, 248) } else { Rgb::u8(40, 42, 60) };
+        bg.raw(|b| b.round_rect(24.0, 24.0, pw as f32, ph as f32, 8.0 * sc, glass, 0.55));
         let px = c.pixels();
         bg.paste(24, 24, &px, pw, ph);
-        save_bmp(&format!("{dir}\\{name}.bmp"), &mut bg, (0, 0, 0));
+        save_bmp(&format!("{dir}\\{name}{sfx}.bmp"), &mut bg, (0, 0, 0));
     }
 
     // ---- barra vertical (ancho 52 px lógicos)
@@ -3517,7 +3650,7 @@ fn render_demo(dir: &str) {
     }
 
     // ---- estilos de espectro: los cinco, uno bajo otro, con su nombre
-    {
+    if !light {
         let lv = media::LEVELS.lock().unwrap().clone();
         let peaks: Vec<f32> = lv.iter().map(|v| (v + 0.12).min(1.0)).collect();
         let (vw, vh, lw) = ((240.0 * sc) as i32, (64.0 * sc) as i32, (120.0 * sc) as i32);
@@ -3535,13 +3668,13 @@ fn render_demo(dir: &str) {
     let total_h: i32 = blocks.iter().map(|b| b.0 + 12).sum::<i32>() + 12;
     let bar_w = vw + 12;
     if let Some(mut v) = Surface::new(bar_w, total_h) {
-        v.fill(0.0, 0.0, bar_w as f32, total_h as f32, Rgb::u8(bar_bg.0, bar_bg.1, bar_bg.2), 1.0);
+        v.raw(|c| c.fill(0.0, 0.0, bar_w as f32, total_h as f32, Rgb::u8(bar_bg.0, bar_bg.1, bar_bg.2), 1.0));
         let mut y = 12;
         for (h, px) in &blocks {
             v.paste(6, y, px, vw, *h);
             y += h + 12;
         }
-        save_bmp(&format!("{dir}\\barra-vertical.bmp"), &mut v, bar_bg);
+        save_bmp(&format!("{dir}\\barra-vertical{sfx}.bmp"), &mut v, bar_bg);
     }
 }
 
@@ -3575,6 +3708,7 @@ fn main() {
         render_demo(&args[2]);
         return;
     }
+    render::set_light(render::system_light());
     // Idioma: el de Windows, salvo que config.json lo fije ("Language": "es" | "en")
     let boot_cfg = Config::load();
     set_media_w(&boot_cfg);
@@ -3634,6 +3768,9 @@ fn main() {
                 hidden: Default::default(),
                 last_playing: None,
                 popup_style: String::new(),
+                bar_light: std::collections::HashMap::new(),
+                popup_tb: 0,
+                popup_light: None,
             })
         });
 

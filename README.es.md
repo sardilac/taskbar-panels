@@ -7,7 +7,8 @@ red, consumo de IA (Claude / GitHub Copilot), sistema (CPU, GPU, FPS, discos) y 
 Transparencia real, animaciones a 60 fps y ventanas flotantes de vidrio esmerilado con el
 detalle de cada panel, todo en un solo proceso de ~5–10 MB de memoria privada y menos del 1 % de un núcleo.
 
-![Barra de tareas con los cuatro paneles](docs/images/es/barra.png)
+![Barra de tareas con los cuatro paneles (modo oscuro)](docs/images/es/barra.png)
+![Barra de tareas con los cuatro paneles (modo claro)](docs/images/es/barra-light.png)
 
 > Las imágenes se generan con datos de ejemplo (`taskbar-panels.exe --render-demo`).
 
@@ -28,6 +29,17 @@ detalle de cada panel, todo en un solo proceso de ~5–10 MB de memoria privada 
   <img src="docs/images/es/popup-red.png" width="300" alt="Ventana flotante de red">
   <img src="docs/images/es/popup-consumo.png" width="300" alt="Ventana flotante de consumo">
   <img src="docs/images/es/barra-vertical.png" height="420" alt="Barra vertical">
+</p>
+
+**Modo claro y oscuro:** los paneles y las ventanas siguen el modo de Windows (*Configuración → Personalización → Colores*)
+y cambian al instante: en modo claro los textos y gráficas usan la versión oscura de cada color sobre fondo claro.
+Cada barra se evalúa por su color real en pantalla, así los paneles siguen legibles aunque Windows deje oscura
+una barra secundaria al cambiar de modo.
+
+<p>
+  <img src="docs/images/es/popup-sistema-light.png" width="300" alt="Ventana de sistema en modo claro">
+  <img src="docs/images/es/popup-red-light.png" width="300" alt="Ventana de red en modo claro">
+  <img src="docs/images/es/barra-vertical-light.png" height="420" alt="Barra vertical en modo claro">
 </p>
 
 <p><img src="docs/images/es/spectrum-styles.png" width="420" alt="Estilos de espectro"></p>
@@ -115,7 +127,7 @@ La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 - **Formato de los paneles**: sistema e IA automáticos (icono si no cabe), panel o icono; red como panel o icono
 - **Estilo del espectro**: onda líquida, barras cápsula, LED segmentado, barras con reflejo o línea neón
 - **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, personalizado por URL JSON), quitar y **token de GitHub para Copilot**
-- **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u oscuro
+- **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u opaco (todos siguen el modo claro/oscuro)
 - **Proveedor del speed test**: Speedtest.net, Cloudflare, LibreSpeed o GCI
 - **Idioma / Language**: automático (idioma de Windows), español o inglés
 - **Reiniciar posición**, **Salir**
@@ -140,7 +152,7 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `SpectrumStyle` | `"wave"`, `"bars"`, `"led"`, `"mirror"`, `"line"` | Estilo del espectro de audio (panel y ventana) |
 | `MediaWidth` | `400`, `480`, `560` (predeterminado), `680`, `800` o cualquier valor de 320 a 1200 | Ancho del panel multimedia en píxeles lógicos (menú *Tamaño del panel multimedia*); se reduce solo si no hay espacio suficiente |
 | `Language` | `"auto"`, `"es"`, `"en"` | Idioma de la interfaz (por defecto, el de Windows: español o, si no, inglés) |
-| `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Fondo de las ventanas flotantes |
+| `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Fondo de las ventanas flotantes (`"dark"` = opaco, sigue el modo claro/oscuro) |
 | `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias |
 | `MonitorIds` | (informativo) | Código → nombre de los monitores detectados |
 

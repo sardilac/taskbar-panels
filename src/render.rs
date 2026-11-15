@@ -20,6 +20,80 @@ impl Rgb {
 }
 pub const WHITE: Rgb = Rgb(255.0, 255.0, 255.0);
 
+/// Modo claro de Windows activo: los colores (pensados para fondo oscuro) se adaptan al dibujar
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_light(on: bool) {
+    LIGHT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn is_light() -> bool {
+    LIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Modo de la barra de tareas y del sistema (`SystemUsesLightTheme`); oscuro si no existe
+pub fn system_light() -> bool {
+    use windows::Win32::System::Registry::*;
+    let mut v: u32 = 0;
+    let mut sz = 4u32;
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            windows::core::w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut v as *mut u32 as *mut _),
+            Some(&mut sz),
+        )
+        .is_ok()
+            && v != 0
+    }
+}
+
+/// Convierte un color de la paleta oscura en su equivalente para fondo claro: invierte la
+/// luminosidad perceptual (OKLab) conservando el tono, de modo que el blanco pasa a casi negro,
+/// los grises secundarios a grises medios, los acentos brillantes a su versión oscura y las pistas
+/// oscuras a gris claro. Al ser monótona, mantiene (invertido) el contraste entre elementos.
+pub fn to_light(c: Rgb) -> Rgb {
+    let lin = |v: f32| {
+        let v = (v / 255.0).clamp(0.0, 1.0);
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    let (r, g, b) = (lin(c.0), lin(c.1), lin(c.2));
+    let l = (0.412_221_5 * r + 0.536_332_5 * g + 0.051_445_99 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    let ll = 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s;
+    let aa = 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s;
+    let bb = 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s;
+    let nl = 0.98 - 0.73 * ll;
+    let to_rgb = |k: f32| -> Option<Rgb> {
+        let (a, b) = (aa * k, bb * k);
+        let l_ = (nl + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+        let m_ = (nl - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+        let s_ = (nl - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+        let r = 4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_;
+        let g = -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_38 * s_;
+        let b = -0.004_196_086_3 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_;
+        let ok = [r, g, b].iter().all(|v| (-0.001..=1.001).contains(v));
+        let enc = |v: f32| {
+            let v = v.clamp(0.0, 1.0);
+            255.0 * if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+        };
+        ok.then(|| Rgb(enc(r), enc(g), enc(b)))
+    };
+    if let Some(c) = to_rgb(1.0) {
+        return c;
+    }
+    // fuera de gama: se reduce el croma (búsqueda binaria) conservando tono y luminosidad
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..8 {
+        let mid = (lo + hi) / 2.0;
+        if to_rgb(mid).is_some() { lo = mid } else { hi = mid }
+    }
+    to_rgb(lo).unwrap_or(Rgb(nl * 255.0, nl * 255.0, nl * 255.0))
+}
+
 struct Dib {
     dc: HDC,
     bmp: HBITMAP,
@@ -114,11 +188,13 @@ pub struct Surface {
     pub h: i32,
     main: Dib,
     frosted: Option<(String, Vec<u32>)>, // fondo precalculado (estilo, píxeles)
+    raw: u32,                            // > 0: dibujar sin adaptar los colores al modo claro
+    memo: [(u32, Rgb); 2],               // últimas conversiones a modo claro (color empaquetado)
 }
 
 impl Surface {
     pub fn new(w: i32, h: i32) -> Option<Surface> {
-        unsafe { Some(Surface { w, h, main: Dib::new(w, h)?, frosted: None }) }
+        unsafe { Some(Surface { w, h, main: Dib::new(w, h)?, frosted: None, raw: 0, memo: [(u32::MAX, WHITE); 2] }) }
     }
 
     fn px(&mut self) -> &mut [u32] {
@@ -130,9 +206,49 @@ impl Surface {
         self.px().fill(0x0100_0000);
     }
 
-    /// Mezcla "over" de un color con opacidad a ∈ [0,1] (premultiplicado)
+    /// Dibuja con los colores tal cual (logotipos, fondos de demostración), también en modo claro
+    pub fn raw<R>(&mut self, f: impl FnOnce(&mut Surface) -> R) -> R {
+        self.raw += 1;
+        let r = f(self);
+        self.raw -= 1;
+        r
+    }
+
+    /// Color adaptado al modo del sistema, con memoria de las dos últimas conversiones (los
+    /// primitivos llaman a `blend` por píxel casi siempre con el mismo color)
+    #[inline]
+    fn themed(&mut self, c: Rgb) -> Rgb {
+        if self.raw > 0 || !is_light() {
+            return c;
+        }
+        let q = |v: f32| v.round().clamp(0.0, 255.0) as u32;
+        let key = q(c.0) << 16 | q(c.1) << 8 | q(c.2);
+        if self.memo[0].0 == key {
+            return self.memo[0].1;
+        }
+        if self.memo[1].0 == key {
+            self.memo.swap(0, 1);
+            return self.memo[0].1;
+        }
+        let out = to_light(c);
+        self.memo[1] = self.memo[0];
+        self.memo[0] = (key, out);
+        out
+    }
+
+    /// Mezcla "over" con el color adaptado al modo claro/oscuro del sistema
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, c: Rgb, a: f32) {
+        if !(a > 0.002) {
+            return;
+        }
+        let c = self.themed(c);
+        self.blend_raw(x, y, c, a);
+    }
+
+    /// Mezcla "over" de un color con opacidad a ∈ [0,1] (premultiplicado)
+    #[inline]
+    fn blend_raw(&mut self, x: i32, y: i32, c: Rgb, a: f32) {
         // `!(a > ..)` descarta también NaN (antes acababa como opacidad 1 y pintaba un bloque sólido)
         if !(a > 0.002) || x < 0 || y < 0 || x >= self.w || y >= self.h {
             return;
@@ -332,7 +448,7 @@ impl Surface {
                 if sa <= 0.0 {
                     continue;
                 }
-                self.blend(px, py, Rgb(ch[2] / sa, ch[1] / sa, ch[0] / sa), a * cov * sa);
+                self.blend_raw(px, py, Rgb(ch[2] / sa, ch[1] / sa, ch[0] / sa), a * cov * sa);
             }
         }
     }
@@ -364,7 +480,7 @@ impl Surface {
                     let g = Rgb(base.0 * groove, base.1 * groove, base.2 * groove);
                     g.mix(WHITE, spec)
                 };
-                self.blend(px, py, col, a * cov);
+                self.blend_raw(px, py, col, a * cov);
             }
         }
     }
@@ -449,25 +565,34 @@ impl Surface {
     /// Estilos: "glass" (vidrio esmerilado), "clear" (cristal transparente), "acrylic" (acrílico de
     /// Windows), "mica" y "dark" (oscuro sólido). El desenfoque lo aporta DWM según el estilo.
     pub fn frosted(&mut self, sc: f32, style: &str) {
+        let light = is_light();
+        let key = format!("{style}{}", if light { ":light" } else { "" });
         if let Some((st, bg)) = &self.frosted {
-            if st == style {
+            if *st == key {
                 let bg = bg.clone();
                 self.px().copy_from_slice(&bg);
                 return;
             }
         }
         // (tinte, opacidad del tinte, luz superior, grano)
-        let (tint, ta, light, grain) = match style {
-            "clear" => (Rgb::u8(20, 24, 36), 0.10, 0.035, 0.6),
-            "acrylic" => (Rgb::u8(12, 14, 22), 0.16, 0.02, 0.0),
-            "mica" => (Rgb::u8(10, 12, 18), 0.08, 0.015, 0.0),
-            "dark" => (Rgb::u8(24, 26, 34), 0.97, 0.02, 0.0),
-            _ => (Rgb::u8(14, 16, 26), 0.30, 0.025, 1.0),
+        // modo claro: tinte claro y más opaco para que el texto oscuro se lea sobre cualquier fondo
+        let (tint, ta, hl, grain) = match (style, light) {
+            ("clear", false) => (Rgb::u8(20, 24, 36), 0.10, 0.035, 0.6),
+            ("acrylic", false) => (Rgb::u8(12, 14, 22), 0.16, 0.02, 0.0),
+            ("mica", false) => (Rgb::u8(10, 12, 18), 0.08, 0.015, 0.0),
+            ("dark", false) => (Rgb::u8(24, 26, 34), 0.97, 0.02, 0.0),
+            (_, false) => (Rgb::u8(14, 16, 26), 0.30, 0.025, 1.0),
+            ("clear", true) => (Rgb::u8(246, 248, 252), 0.30, 0.10, 0.6),
+            ("acrylic", true) => (Rgb::u8(243, 243, 245), 0.40, 0.06, 0.0),
+            ("mica", true) => (Rgb::u8(243, 243, 245), 0.22, 0.05, 0.0),
+            ("dark", true) => (Rgb::u8(249, 249, 251), 0.97, 0.0, 0.0),
+            (_, true) => (Rgb::u8(250, 251, 254), 0.50, 0.10, 1.0),
         };
+        self.raw += 1;
         self.px().fill(0);
         let (w, h) = (self.w as f32, self.h as f32);
         self.fill(0.0, 0.0, w, h, tint, ta); // tinte
-        self.fill(0.0, 0.0, w, h * 0.5, WHITE, light); // luz suave en la mitad superior
+        self.fill(0.0, 0.0, w, h * 0.5, WHITE, hl); // luz suave en la mitad superior
         // grano (ruido estático determinista)
         for y in (0..self.h).filter(|_| grain > 0.0) {
             for x in 0..self.w {
@@ -492,12 +617,17 @@ impl Surface {
                 let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
                 let e = (1.0 - (d + 1.0).abs()).clamp(0.0, 1.0);
                 if e > 0.0 {
-                    self.blend(x, y, WHITE, e * (0.08 + 0.22 * k * k));
+                    if light {
+                        self.blend(x, y, Rgb(0.0, 0.0, 0.0), e * (0.10 + 0.04 * (1.0 - k)));
+                    } else {
+                        self.blend(x, y, WHITE, e * (0.08 + 0.22 * k * k));
+                    }
                 }
             }
         }
+        self.raw -= 1;
         let snapshot = self.px().to_vec();
-        self.frosted = Some((style.to_string(), snapshot));
+        self.frosted = Some((key, snapshot));
     }
 
     /// Copia de los píxeles (BGRA premultiplicado), para pruebas
@@ -515,7 +645,7 @@ impl Surface {
                     continue;
                 }
                 let c = Rgb(((v >> 16) & 0xFF) as f32 / a, ((v >> 8) & 0xFF) as f32 / a, (v & 0xFF) as f32 / a);
-                self.blend(x + sx, y + sy, c, a);
+                self.blend_raw(x + sx, y + sy, c, a);
             }
         }
     }

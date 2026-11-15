@@ -7,7 +7,8 @@ network, AI usage (Claude / GitHub Copilot / OpenAI / Anthropic), system (CPU, G
 Real transparency, 60 fps animations and frosted-glass flyouts with the details of each panel,
 all in a single process using ~5–10 MB of private memory and less than 1 % of one core.
 
-![Taskbar with the four panels](docs/images/barra.png)
+![Taskbar with the four panels (dark mode)](docs/images/barra.png)
+![Taskbar with the four panels (light mode)](docs/images/barra-light.png)
 
 > Images are generated with sample data (`taskbar-panels.exe --render-demo`); the interface
 > follows the Windows language (Spanish or English).
@@ -29,6 +30,17 @@ all in a single process using ~5–10 MB of private memory and less than 1 % of 
   <img src="docs/images/popup-red.png" width="300" alt="Network flyout">
   <img src="docs/images/popup-consumo.png" width="300" alt="AI usage flyout">
   <img src="docs/images/barra-vertical.png" height="420" alt="Vertical taskbar">
+</p>
+
+**Light and dark mode:** panels and flyouts follow the Windows mode (*Settings → Personalization → Colors*)
+and switch on the fly: in light mode text and charts use the dark version of each color over a light background.
+Each taskbar is checked by its actual on-screen color, so panels stay readable even when Windows leaves a
+secondary taskbar dark after switching modes.
+
+<p>
+  <img src="docs/images/popup-sistema-light.png" width="300" alt="System flyout in light mode">
+  <img src="docs/images/popup-red-light.png" width="300" alt="Network flyout in light mode">
+  <img src="docs/images/barra-vertical-light.png" height="420" alt="Vertical taskbar in light mode">
 </p>
 
 <p><img src="docs/images/spectrum-styles.png" width="420" alt="Spectrum styles"></p>
@@ -116,7 +128,7 @@ Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 - **Panel format**: system and AI automatic (icon if it does not fit), panel or icon; network as panel or icon
 - **Spectrum style**: liquid wave, capsule bars, segmented LED, mirrored bars or neon line
 - **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, custom JSON URL), remove and **GitHub token for Copilot**
-- **Window background**: frosted glass, clear glass, Windows acrylic, mica or dark
+- **Window background**: frosted glass, clear glass, Windows acrylic, mica or solid (all follow light/dark mode)
 - **Speed test provider**: Speedtest.net, Cloudflare, LibreSpeed or GCI
 - **Idioma / Language**: automatic (Windows language), Spanish or English
 - **Reset position**, **Exit**
@@ -142,7 +154,7 @@ Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 | `SpectrumStyle` | `"wave"`, `"bars"`, `"led"`, `"mirror"`, `"line"` | Audio spectrum style (panel and flyout) |
 | `MediaWidth` | `400`, `480`, `560` (default), `680`, `800` or any value from 320 to 1200 | Media panel width in logical pixels (*Media panel size* menu); it shrinks automatically if there is not enough room |
 | `Language` | `"auto"`, `"es"`, `"en"` | Interface language (default: the Windows language; Spanish, otherwise English) |
-| `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Flyout background |
+| `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Flyout background (`"dark"` = solid, follows light/dark mode) |
 | `SecondaryRightMargin` | number (logical px) | Space reserved for the clock on secondary taskbars |
 | `MonitorIds` | (informational) | Code → name of the detected monitors |
 

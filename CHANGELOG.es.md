@@ -2,6 +2,14 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.3.4
+
+- **Modo claro y oscuro**: los paneles y las ventanas flotantes siguen el modo de Windows y cambian al instante. En modo claro cada color se convierte en su equivalente oscuro (se invierte la luminosidad perceptual OKLab conservando el tono), así textos, gráficas e indicadores se leen bien sobre una barra clara; las ventanas flotantes usan tinte claro y el modo claro de DWM. Los iconos de proveedores, la carátula y el vinilo conservan sus colores.
+- **Cada barra se evalúa por su color real en pantalla**: Explorer a veces deja una barra (normalmente una secundaria) oscura tras cambiar de modo; los paneles de esa barra mantienen la paleta oscura en vez de quedar ilegibles.
+- El fondo *Oscuro* de las ventanas pasa a llamarse *Opaco* y sigue el modo (`PopupStyle` sigue siendo `"dark"`).
+- El botón del speed test usa azul de acento con texto blanco en modo claro.
+- `--render-demo` genera también las imágenes en modo claro (`*-light.png`).
+
 ## v1.3.3
 
 - **Paneles de red, IA y sistema arrastrables por separado**: cada uno guarda su propia posición en la barra (antes solo se arrastraba el de red y movía los tres juntos). Si un panel llega a otro lo empuja, sin solaparse nunca; al pasar por encima de un vecino intercambian el orden. Ninguno sale de la barra ni invade el espacio del panel multimedia, que se aparta o se oculta si no cabe. `pos.json` guarda ahora `Offsets` por panel (el `Gap` anterior se migra solo) y *Reiniciar posición* los vuelve a juntar a la derecha.
