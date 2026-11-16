@@ -141,7 +141,7 @@ La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 - **Reiniciar posición**, **Salir**
 
 Además: los botones multimedia funcionan sin quitar el foco a la ventana activa, los paneles de red,
-IA y sistema se pueden **arrastrar** en horizontal, cada uno por separado, sin solaparse nunca y sin salir de la barra, y al **dejar el cursor** sobre un panel aparece su ventana de detalle.
+IA y sistema se pueden **arrastrar** en horizontal, cada uno por separado, sin solaparse nunca y sin salir de la barra (uno soltado a la izquierda del botón Inicio queda a esa misma distancia del borde izquierdo en todas las pantallas, sea cual sea su ancho), y al **dejar el cursor** sobre un panel aparece su ventana de detalle.
 
 ## Configuración
 
@@ -152,7 +152,7 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Pantallas donde se muestran los paneles (códigos EDID, ver `MonitorIds`) |
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Selección por panel: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Activar o desactivar paneles |
-| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Formato en la barra: panel con detalle o icono (`auto` = icono solo si no cabe; `full` se respeta mientras quepa: si en una pantalla taparía los iconos de las apps, pasa a icono solo en ella). En barras verticales los tres van como icono salvo que se elija `"full"` |
+| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Formato en la barra: panel con detalle o icono (`auto` = icono solo si no cabe; `full` se respeta mientras quepa: si en una pantalla taparía los iconos de las apps, pasa a icono solo en ella). Los iconos miden 34 px lógicos de ancho y los contiguos quedan a 4 px, como los de la bandeja. En barras verticales los tres van como icono salvo que se elija `"full"` |
 | `AiProviders` | lista de proveedores | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "gemini" \| "deepseek" \| "kimi" \| "ollama" \| "ollama_cloud" \| "lmstudio" \| "custom", "name", "enabled", "budget" }`; los personalizados añaden `url`, `percentField`, `valueField`, `labelField`. Las claves van al Administrador de credenciales (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` o un `id` | Proveedor que se muestra en la barra |
 | `SpeedTestProvider` | `ookla` (predeterminado) / `cloudflare` / `librespeed` / `gci` | Proveedor del speed test de la ventana de red |
@@ -166,7 +166,7 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias mientras no se conoce su tamaño real (se mide en cada pantalla) |
 | `MonitorIds` | (informativo) | Código → nombre de los monitores detectados |
 
-Otros archivos en la misma carpeta: `pos.json` (separación del panel de red), `ai_cache.json`
+Otros archivos en la misma carpeta: `pos.json` (posición de cada panel arrastrable: `Offsets` desde el borde derecho y `Left` desde el izquierdo para los soltados a la izquierda de Inicio), `ai_cache.json`
 (último consumo, evita consultas al reiniciar), `flags\` (caché de banderas), `crash.log` (si el programa falla)
 y `debug.log` (solo si existe `debug.flag`).
 

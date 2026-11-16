@@ -142,7 +142,7 @@ Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 - **Reset position**, **Exit**
 
 Also: the media buttons work without stealing focus from the active window, the network, AI and
-system panels can each be **dragged** horizontally on their own (they never overlap or leave the bar), and **hovering** over a panel opens its detail flyout. In the
+system panels can each be **dragged** horizontally on their own (they never overlap or leave the bar; one dropped to the left of the Start button keeps that same distance from the left edge on every screen, whatever its width), and **hovering** over a panel opens its detail flyout. In the
 network flyout, the speed-test card has a provider selector (click to switch) and a **Start test** button.
 
 ## Settings
@@ -154,7 +154,7 @@ Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 | `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Displays where the panels are shown (EDID codes, see `MonitorIds`) |
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Per-panel selection: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Enable or disable panels |
-| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit; `full` is honoured while it fits: if it would cover the app icons on a screen, it becomes an icon on that screen only). On vertical taskbars the three are icons unless set to `"full"` |
+| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit; `full` is honoured while it fits: if it would cover the app icons on a screen, it becomes an icon on that screen only). Icons are 34 logical px wide and adjacent ones sit 4 px apart, like the tray icons. On vertical taskbars the three are icons unless set to `"full"` |
 | `AiProviders` | list of providers | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "gemini" \| "deepseek" \| "kimi" \| "ollama" \| "ollama_cloud" \| "lmstudio" \| "custom", "name", "enabled", "budget" }`; custom ones add `url`, `percentField`, `valueField`, `labelField`. Keys go to Windows Credential Manager (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` or an `id` | Provider shown on the taskbar |
 | `SpeedTestProvider` | `ookla` (default) / `cloudflare` / `librespeed` / `gci` | Speed-test provider of the network flyout |
@@ -168,7 +168,7 @@ Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 | `SecondaryRightMargin` | number (logical px) | Space reserved for the clock on secondary taskbars until its real size is known (it is measured on each screen) |
 | `MonitorIds` | (informational) | Code → name of the detected monitors |
 
-Other files in the same folder: `pos.json` (network panel offset), `ai_cache.json` (last usage,
+Other files in the same folder: `pos.json` (position of each draggable panel: `Offsets` from the right edge and `Left` from the left edge for those dropped to the left of Start), `ai_cache.json` (last usage,
 avoids queries on restart), `flags\` (country flags cache), `crash.log` (if the program crashes)
 and `debug.log` (only if `debug.flag` exists).
 

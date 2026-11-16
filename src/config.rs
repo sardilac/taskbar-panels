@@ -125,7 +125,19 @@ pub fn load_offsets() -> [i32; 4] {
     [get("NetworkPanel"), get("UsagePanel"), get("SystemPanel"), get("RadioPanel")]
 }
 
-pub fn save_offsets(o: &[i32; 4]) {
-    let v = json!({ "Offsets": { "NetworkPanel": o[0], "UsagePanel": o[1], "SystemPanel": o[2], "RadioPanel": o[3] } });
+/// Anclas al borde izquierdo (px lógicos) de los paneles soltados a la izquierda de Inicio; `None` si
+/// `pos.json` es anterior a esta clave (o no existe)
+pub fn load_left() -> Option<[Option<i32>; 4]> {
+    let v = read_json("pos.json")?;
+    let l = v.get("Left")?;
+    let get = |k: &str| l[k].as_i64().map(|x| x.max(0) as i32);
+    Some([get("NetworkPanel"), get("UsagePanel"), get("SystemPanel"), get("RadioPanel")])
+}
+
+pub fn save_offsets(o: &[i32; 4], left: &[Option<i32>; 4]) {
+    let v = json!({
+        "Offsets": { "NetworkPanel": o[0], "UsagePanel": o[1], "SystemPanel": o[2], "RadioPanel": o[3] },
+        "Left": { "NetworkPanel": left[0], "UsagePanel": left[1], "SystemPanel": left[2], "RadioPanel": left[3] },
+    });
     let _ = std::fs::write(appdata_dir().join("pos.json"), v.to_string());
 }

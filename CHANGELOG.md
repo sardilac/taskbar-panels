@@ -2,6 +2,11 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.5.4
+
+- **Tighter icon mode**: panels in icon mode are narrower (34 logical px instead of 44) and two adjacent icons sit 4 px apart instead of 14, close to the spacing of the tray icons. The drawing keeps its size; if they still do not fit, they narrow down to 28 px before being hidden.
+- **Panels left of Start, the same on every screen**: a dragged panel's position was stored only as its distance from the right edge, so one moved to the far left on the laptop (next to the media panel) landed on the app icons on a wider screen and ended up to their right. A panel dropped to the left of the Start button is now anchored to the left edge (`Left` in `pos.json`, logical px) and keeps that distance on every screen; saved positions migrate on their own and *Reset position* clears the anchor. With `debug.flag`, `debug.log` also records each taskbar's geometry and placement.
+
 ## v1.5.3
 
 - **Panels no longer cover the app icons**: every screen is laid out with its own width and scale. If even in icon mode they do not fit between the app icons (search box included) and the clock — typical on a laptop screen with many open windows — the panels are packed closer and their icons narrow evenly (down to 30 logical px) so all of them stay in view; only if they still do not fit are they hidden on that screen, starting with the one farthest from the clock, and they come back on their own when space frees up. Nothing changes on the other screens. A panel dragged on top of the icons stays to their right.

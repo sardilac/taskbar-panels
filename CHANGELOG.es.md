@@ -2,6 +2,11 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.5.4
+
+- **Modo icono más justo**: los paneles en modo icono son más estrechos (34 px lógicos en vez de 44) y dos iconos contiguos quedan a 4 px en vez de 14, con una separación parecida a la de los iconos de la bandeja. El dibujo conserva su tamaño; si aun así no caben, se estrechan hasta 28 px antes de ocultarse.
+- **Paneles a la izquierda de Inicio, iguales en todas las pantallas**: la posición de un panel arrastrado se guardaba solo como distancia al borde derecho, así que uno llevado al extremo izquierdo en el portátil (junto al multimedia) caía sobre los iconos de las apps en una pantalla más ancha y acababa a su derecha. Ahora un panel soltado a la izquierda del botón Inicio se ancla al borde izquierdo (`Left` en `pos.json`, px lógicos) y queda a esa distancia en todas las pantallas; las posiciones guardadas se migran solas y *Reiniciar posición* quita el ancla. Con `debug.flag`, `debug.log` registra además la geometría y la colocación de cada barra.
+
 ## v1.5.3
 
 - **Los paneles ya no tapan los iconos de las apps**: cada pantalla se calcula con su propio ancho y escala. Si ni en modo icono caben entre los iconos de las apps (con el cuadro de búsqueda incluido) y el reloj —lo habitual en la pantalla de un portátil con muchas ventanas abiertas—, los paneles se juntan y sus iconos se estrechan por igual (hasta 30 px lógicos) para que sigan todos a la vista; solo si ni así caben se ocultan en esa pantalla, empezando por el más alejado del reloj, y vuelven solos al liberarse espacio. En las demás pantallas no cambia nada. Un panel arrastrado encima de los iconos queda a su derecha.
