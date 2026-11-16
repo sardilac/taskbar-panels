@@ -2,6 +2,10 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## Sin publicar
+
+- **Panel de radio** (nuevo): emisoras por Internet de todos los países de América y Europa (directorio Radio Browser; el catálogo de cada país se guarda y se renueva a diario). En la barra muestra el letrero **ON AIR** con el nombre de la emisora mientras suena y, en modo icono, una nota musical roja. La ventana flotante permite elegir primero el país y luego la emisora, buscar por nombre, ciudad o género (también en el directorio completo del país), detener o reanudar, ajustar el volumen y ver los datos de la emisora actual. La emisora también aparece en los controles multimedia de Windows (y en el panel multimedia, con su espectro). Se activa o desactiva en *Paneles → Radio* y su formato (automático, panel o icono) en *Formato de los paneles*. Diagnóstico: `taskbar-panels.exe --radio-report <archivo>`.
+
 ## v1.4.0
 
 - **Salud de la conexión** (panel de red): cada 2 s se hace ping al router, al servidor DNS y a Internet, y se comparan tramo a tramo para decir dónde está el problema: *Wi-Fi inestable*, *El router no responde*, *Sin acceso a Internet*, *Internet con pérdidas*, *Internet con latencia alta* o *DNS lento*. El panel muestra un punto de estado (verde, ámbar o rojo con halo); la ventana flotante añade una tarjeta con el diagnóstico y una línea de tiempo de 2 minutos de latencia y pérdidas por tramo. Los destinos que nunca responden a ping se excluyen en vez de dar falsas alarmas. Se puede desactivar desde el menú (*Salud de la conexión*) o con `"NetHealth": false`.

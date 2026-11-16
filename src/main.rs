@@ -13,6 +13,7 @@ mod host;
 mod i18n;
 mod media;
 mod net;
+mod radio;
 mod render;
 mod flags;
 mod gpu;
@@ -50,8 +51,11 @@ enum Kind {
     Usage,
     System,
     Media,
+    Radio,
 }
-const KINDS: [Kind; 4] = [Kind::Ip, Kind::Usage, Kind::System, Kind::Media];
+const KINDS: [Kind; 5] = [Kind::Ip, Kind::Usage, Kind::System, Kind::Media, Kind::Radio];
+/// Paneles de la derecha (se colocan en cadena y se pueden arrastrar)
+const CHAIN: [Kind; 4] = [Kind::Ip, Kind::Usage, Kind::System, Kind::Radio];
 
 impl Kind {
     fn name(self) -> &'static str {
@@ -60,6 +64,7 @@ impl Kind {
             Kind::Usage => "UsagePanel",
             Kind::System => "SystemPanel",
             Kind::Media => "MediaPanel",
+            Kind::Radio => "RadioPanel",
         }
     }
     fn label(self) -> &'static str {
@@ -68,6 +73,7 @@ impl Kind {
             Kind::Usage => tr("Consumo de IA", "AI usage"),
             Kind::System => tr("Sistema (CPU, GPU, FPS)", "System (CPU, GPU, FPS)"),
             Kind::Media => tr("Multimedia", "Media"),
+            Kind::Radio => tr("Radio (emisoras)", "Radio (stations)"),
         }
     }
     /// ancho en px lógicos (96 dpi)
@@ -77,6 +83,7 @@ impl Kind {
             Kind::Usage => 170.0,
             Kind::System => 150.0, // métricas (110) + anillo del disco del sistema
             Kind::Media => media_w(),
+            Kind::Radio => 176.0,
         }
     }
 }
@@ -141,6 +148,7 @@ fn chain_slot(k: Kind) -> Option<usize> {
         Kind::Usage => Some(1),
         Kind::System => Some(2),
         Kind::Media => None,
+        Kind::Radio => Some(3),
     }
 }
 
@@ -149,7 +157,7 @@ fn chain_slot(k: Kind) -> Option<usize> {
 /// a 14 px lógicos del otro: se mueven de forma independiente pero nunca se solapan.
 /// `min_left` es el límite izquierdo (p. ej. el espacio del multimedia): los que lo pasen se empujan
 /// a la derecha, también sin solaparse. Devuelve (tipo, x, ancho) en px físicos, de derecha a izquierda.
-fn chain_layout(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 3], min_left: i32) -> Vec<(Kind, i32, i32)> {
+fn chain_layout(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], min_left: i32) -> Vec<(Kind, i32, i32)> {
     let mut v: Vec<(Kind, i32)> = items.to_vec();
     v.sort_by_key(|(k, _)| chain_slot(*k).map(|i| (offs[i], i)).unwrap_or((0, 0)));
     let sep = (14.0 * b.scale) as i32;
@@ -266,7 +274,7 @@ mod tests {
     }
 
     /// Comprueba límites de la barra, `min_left` (si cabe) y que no haya solapes
-    fn check(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 3], min_left: i32) {
+    fn check(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], min_left: i32) {
         let p = chain_layout(b, items, offs, min_left);
         assert_eq!(p.len(), items.len());
         let sep = (14.0 * b.scale) as i32;
@@ -297,7 +305,7 @@ mod tests {
                 for &a in &steps {
                     for &u in &steps {
                         for &s in &steps {
-                            let offs = [a.max(0), u.max(0), s.max(0)];
+                            let offs = [a.max(0), u.max(0), s.max(0), 8];
                             for min_left in [i32::MIN, left + (400.0 * scale) as i32, right - 50] {
                                 check(&b, &all, &offs, min_left);
                                 check(&b, &all[..2], &offs, min_left);
@@ -318,7 +326,7 @@ struct App {
     panels: Vec<Panel>,
     bars: Vec<Taskbar>,
     /// separación de red, IA y sistema respecto al borde derecho (px lógicos, ver `chain_layout`)
-    offs: [i32; 3],
+    offs: [i32; 4],
     drag: Option<Drag>,
     net_prev: Option<(u64, u64, Instant)>,
     taskbar_created: u32,
@@ -869,13 +877,13 @@ fn paint_ip_compact(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) 
 /// Formato de un panel en la barra: "auto" (icono solo si no cabe), "full" (panel) o "icon"
 fn panel_mode(cfg: &Config, k: Kind) -> &'static str {
     let def = match k {
-        Kind::Usage | Kind::System => "auto",
+        Kind::Usage | Kind::System | Kind::Radio => "auto",
         _ => "full",
     };
     match cfg.v["PanelStyle"][k.name()].as_str() {
-        Some("icon") if matches!(k, Kind::Usage | Kind::System | Kind::Ip) => "icon",
+        Some("icon") if k != Kind::Media => "icon",
         Some("full") => "full",
-        Some("auto") if matches!(k, Kind::Usage | Kind::System) => "auto",
+        Some("auto") if matches!(k, Kind::Usage | Kind::System | Kind::Radio) => "auto",
         _ => def,
     }
 }
@@ -1162,6 +1170,7 @@ fn popup_h(kind: Kind) -> f32 {
         Kind::Ip => 324.0 + ROUTER_CARD_H + 8.0 + SPEED_CARD_H + 8.0 + if net::health_on() { HEALTH_CARD_H + 8.0 } else { 0.0 },
         Kind::Usage => f32::from_bits(AI_POPUP_H.load(std::sync::atomic::Ordering::Relaxed)).max(120.0),
         Kind::Media => 244.0,
+        Kind::Radio => RADIO_POPUP_H,
     }
 }
 
@@ -1685,6 +1694,418 @@ fn paint_popup_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State,
     spectrum(c, style, x0, vy, x1 - x0, vh, sc, &d, &d, ph, pulse);
 }
 
+// ======================================================================= radio
+const AIR_COL: Rgb = Rgb::u8(255, 58, 70);
+const ACT_RADIO_TOGGLE: u32 = 10;
+const ACT_RADIO_VOL_DOWN: u32 = 11;
+const ACT_RADIO_VOL_UP: u32 = 12;
+const ACT_RADIO_PAGE_UP: u32 = 13;
+const ACT_RADIO_PAGE_DOWN: u32 = 14;
+const ACT_RADIO_SEARCH: u32 = 15;
+const ACT_RADIO_CLEAR: u32 = 16;
+const ACT_RADIO_BACK: u32 = 17;
+const ACT_RADIO_CONTINENT: u32 = 20; // +índice de radio::CONTINENTS
+const ACT_RADIO_COUNTRY: u32 = 500; // +índice del país en el selector
+const ACT_RADIO_STATION: u32 = 1000; // +índice de la emisora en la lista visible
+const RADIO_POPUP_W: f32 = 430.0;
+const RADIO_ROWS: usize = 10;
+const RADIO_ROW_H: f32 = 30.0;
+const RADIO_CARD_H: f32 = 108.0;
+const RADIO_NAV_H: f32 = 24.0;
+const RADIO_SEARCH_H: f32 = 28.0;
+/// países por fila en el selector
+const RADIO_COLS: usize = 2;
+const RADIO_POPUP_H: f32 = 40.0 + RADIO_CARD_H + 8.0 + RADIO_NAV_H + 8.0 + RADIO_SEARCH_H + 8.0 + (RADIO_ROWS as f32 * RADIO_ROW_H + 8.0) + 6.0 + 20.0 + 10.0;
+
+thread_local! {
+    /// primera fila visible de la lista (emisoras o países; se acota al pintar)
+    static RADIO_SCROLL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// el cuadro de búsqueda tiene el teclado (la ventana se activó al pulsarlo)
+    static RADIO_FOCUS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn radio_scroll(d: i32) {
+    RADIO_SCROLL.with(|s| s.set((s.get() as i32 + d).max(0) as usize));
+}
+
+fn radio_top() {
+    RADIO_SCROLL.with(|s| s.set(0));
+}
+
+/// Elige el país `i` del selector y pasa a su lista de emisoras
+fn radio_pick_country(i: usize) {
+    if let Some((code, _)) = radio::visible_countries().get(i) {
+        radio::set_country(code);
+        radio_top();
+    }
+}
+
+/// Tecla en el cuadro de búsqueda: escribe, borra (Retroceso), limpia (Esc) o elige el primer
+/// resultado (Intro): el primer país en el selector o la primera emisora de la lista
+fn radio_char(ch: u32) {
+    let (mut q, picking) = {
+        let r = radio::radio();
+        (r.query.clone(), r.country.is_empty())
+    };
+    match ch {
+        8 => {
+            q.pop();
+        }
+        27 => q.clear(),
+        13 if picking => return radio_pick_country(0),
+        13 => return radio::play_index(0),
+        c if c >= 32 => match char::from_u32(c) {
+            Some(c) if q.chars().count() < 40 => q.push(c),
+            _ => return,
+        },
+        _ => return,
+    }
+    radio::set_query(&q);
+    radio_top();
+}
+
+/// Clic en una zona de la ventana de radio
+fn radio_click(hit: u32) {
+    match hit {
+        ACT_RADIO_TOGGLE => radio::toggle(),
+        ACT_RADIO_VOL_DOWN => radio::volume_step(-0.1),
+        ACT_RADIO_VOL_UP => radio::volume_step(0.1),
+        ACT_RADIO_PAGE_UP => radio_scroll(-(RADIO_ROWS as i32)),
+        ACT_RADIO_PAGE_DOWN => radio_scroll(RADIO_ROWS as i32),
+        ACT_RADIO_CLEAR => {
+            radio::set_query("");
+            radio_top();
+        }
+        ACT_RADIO_BACK => {
+            radio::set_country("");
+            radio_top();
+        }
+        h if h >= ACT_RADIO_STATION => radio::play_index((h - ACT_RADIO_STATION) as usize),
+        h if h >= ACT_RADIO_COUNTRY => radio_pick_country((h - ACT_RADIO_COUNTRY) as usize),
+        h if h >= ACT_RADIO_CONTINENT && ((h - ACT_RADIO_CONTINENT) as usize) < radio::CONTINENTS.len() => {
+            radio::set_continent((h - ACT_RADIO_CONTINENT) as usize);
+            radio_top();
+        }
+        _ => {}
+    }
+}
+
+/// Nota musical roja (siempre en su color, también en modo claro); al aire lleva un halo que late
+fn draw_note(c: &mut Surface, cx: f32, cy: f32, size: f32, on_air: bool, t: f32) {
+    c.raw(|c| {
+        if on_air {
+            let beat = 0.5 + 0.5 * (t * 3.0).sin();
+            c.dot(cx, cy, size * 0.1, AIR_COL, 0.0, size * 0.85, 0.2 + 0.2 * beat);
+        }
+        let col = if on_air { AIR_COL } else { Rgb::u8(214, 52, 64) };
+        c.text("\u{EC4F}", cx - size, cy - size, size * 2.0, size * 2.0, size, 400, "Segoe Fluent Icons", col, DT_CENTER);
+    });
+}
+
+/// Letrero de estado: «ON AIR» en rojo sólido (parpadea cada segundo) mientras suena; si no, una
+/// píldora tenue con el estado. Devuelve el ancho.
+fn on_air_sign(c: &mut Surface, x: f32, yc: f32, px: f32, sc: f32, n: &radio::Now, t: f32) -> f32 {
+    match n.status {
+        radio::Status::Playing => {
+            let label = "ON AIR";
+            let tw = c.text_width(label, px, 700, "Segoe UI");
+            let (bw, bh) = (tw + 10.0 * sc, (px + 5.0 * sc).round());
+            let lit = if (t as u32) % 2 == 0 { 1.0 } else { 0.78 };
+            c.raw(|c| {
+                c.round_rect(x - 1.5 * sc, yc - bh / 2.0 - 1.5 * sc, bw + 3.0 * sc, bh + 3.0 * sc, 4.0 * sc, AIR_COL, 0.28 * lit);
+                c.round_rect(x, yc - bh / 2.0, bw, bh, 3.0 * sc, AIR_COL, lit);
+                c.text(label, x, yc - bh / 2.0, bw, bh, px, 700, "Segoe UI", WHITE, DT_CENTER);
+            });
+            bw
+        }
+        radio::Status::Connecting => badge(c, x, yc, tr("CONECTANDO…", "CONNECTING…"), px, RAM_COL, sc, 0.0),
+        radio::Status::Error => badge(c, x, yc, "ERROR", px, HEALTH_BAD, sc, 0.0),
+        radio::Status::Stopped => badge(c, x, yc, "RADIO", px, DIM, sc, 0.0),
+    }
+}
+
+/// Panel en la barra: nota + letrero «ON AIR» y nombre de la emisora
+fn paint_radio(c: &mut Surface, w: f32, h: f32, sc: f32, n: &radio::Now, t: f32) {
+    let isz = (h * 0.44).min(19.0 * sc);
+    draw_note(c, isz + 2.0 * sc, h / 2.0, isz, n.on_air(), t);
+    let tx = isz * 2.0 + 6.0 * sc;
+    let tw = (w - tx - 2.0 * sc).max(0.0);
+    let px = (11.5 * sc).min((h * 0.32).floor());
+    on_air_sign(c, tx, h * 0.29, (px * 0.8).floor(), sc, n, t);
+    let name: &str = match &n.station {
+        Some(s) => &s.name,
+        None => tr("Elige una emisora", "Pick a station"),
+    };
+    let col = if n.on_air() { WHITE } else { Rgb::u8(190, 198, 216) };
+    c.text(name, tx, h * 0.5, tw, h * 0.44, px, 600, "Segoe UI", col, DT_LEFT | DT_END_ELLIPSIS);
+}
+
+/// Modo icono: nota musical roja; un punto indica que está al aire (rojo) o conectando (ámbar)
+fn paint_radio_compact(c: &mut Surface, w: f32, h: f32, sc: f32, n: &radio::Now, t: f32) {
+    let size = (w.min(h) * 0.42).min(19.0 * sc);
+    draw_note(c, w / 2.0, h / 2.0, size, n.on_air(), t);
+    let (cx, cy) = (w - 5.0 * sc, 5.0 * sc);
+    match n.status {
+        radio::Status::Playing if (t as u32) % 2 == 0 => c.raw(|c| c.dot(cx, cy, 2.6 * sc, AIR_COL, 1.0, 4.0 * sc, 0.7)),
+        radio::Status::Playing => c.raw(|c| c.dot(cx, cy, 2.6 * sc, AIR_COL, 0.75, 0.0, 0.0)),
+        radio::Status::Connecting => c.dot(cx, cy, 2.4 * sc, RAM_COL, 1.0, 3.0 * sc, 0.5),
+        _ => {}
+    }
+}
+
+/// Ventana de radio: emisora actual (estado, datos, reproducir/detener y volumen) y, debajo, primero
+/// el selector de país (América / Europa) y después la lista de emisoras del país elegido (clic
+/// para reproducir). El buscador filtra países o emisoras; rueda o flechas para desplazar.
+fn paint_popup_radio(c: &mut Surface, w: f32, _h: f32, sc: f32, t: f32) {
+    let (n, continent, country, loading, failed, query, searching) = {
+        let r = radio::radio();
+        (r.now.clone(), r.continent.min(radio::CONTINENTS.len() - 1), r.country.clone(), r.loading.contains(&r.country), r.failed.contains(&r.country), r.query.clone(), r.searching)
+    };
+    let picking = country.is_empty();
+    let list = if picking { Vec::new() } else { radio::visible() };
+    let countries = if picking { radio::visible_countries() } else { Vec::new() };
+    let right = match n.since {
+        Some(s) if n.on_air() => format!("{}  {}", tr("al aire", "on air"), mmss(s.elapsed().as_secs_f64())),
+        _ if picking => format!("{} {}", countries.len(), tr("países", "countries")),
+        _ => format!("{} {}", list.len(), tr("emisoras", "stations")),
+    };
+    let y0 = popup_frame(c, w, sc, "Radio", &right);
+    let pad = 12.0 * sc;
+    let cw = w - pad * 2.0;
+    let hover = POPUP_HOVER.with(|h| h.get());
+    let mut hits: Vec<(f32, f32, f32, f32, u32)> = Vec::new();
+    let soft = Rgb::u8(205, 212, 228);
+    let icon = "Segoe Fluent Icons";
+
+    // ---- emisora actual
+    let ch = RADIO_CARD_H * sc;
+    card(c, pad, y0, cw, ch, sc);
+    let ir = 25.0 * sc;
+    let (icx, icy) = (pad + 12.0 * sc + ir, y0 + 39.0 * sc);
+    c.raw(|c| c.dot(icx, icy, ir, AIR_COL, if n.on_air() { 0.2 } else { 0.1 }, 0.0, 0.0));
+    draw_note(c, icx, icy, ir * 0.9, n.on_air(), t);
+    let bsz = 38.0 * sc;
+    let (bcx, bcy) = (pad + cw - 12.0 * sc - bsz / 2.0, icy);
+    let tx = icx + ir + 12.0 * sc;
+    let tw = bcx - bsz / 2.0 - 8.0 * sc - tx;
+    on_air_sign(c, tx, y0 + 17.0 * sc, 9.0 * sc, sc, &n, t);
+    match &n.station {
+        Some(s) => {
+            c.text(&s.name, tx, y0 + 27.0 * sc, tw, 22.0 * sc, 15.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT | DT_END_ELLIPSIS);
+            let place = [s.place.as_str(), s.country.as_str()].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(", ");
+            let fmt = if s.bitrate > 0 { format!("{} {} kbps", s.codec, s.bitrate) } else { s.codec.clone() };
+            let info = [place, fmt].into_iter().filter(|x| !x.trim().is_empty()).collect::<Vec<_>>().join("  ·  ");
+            c.text(&info, tx, y0 + 49.0 * sc, tw, 16.0 * sc, 10.5 * sc, 400, "Segoe UI", soft, DT_LEFT | DT_END_ELLIPSIS);
+            let (line, col) = if n.status == radio::Status::Error { (n.error.clone(), HEALTH_BAD) } else { (s.tags.clone(), DIM) };
+            c.text(&line, tx, y0 + 65.0 * sc, tw, 15.0 * sc, 9.5 * sc, 400, "Segoe UI", col, DT_LEFT | DT_END_ELLIPSIS);
+            // botón reproducir / detener (sólido, con sus colores también en modo claro)
+            let active = matches!(n.status, radio::Status::Playing | radio::Status::Connecting);
+            let fill = if active { AIR_COL } else if render::is_light() { Rgb::u8(0, 95, 184) } else { Rgb::u8(60, 160, 255) };
+            c.raw(|c| {
+                c.dot(bcx, bcy, bsz / 2.0, fill, if hover == ACT_RADIO_TOGGLE { 1.0 } else { 0.8 }, 0.0, 0.0);
+                c.text(if active { "\u{E71A}" } else { "\u{E768}" }, bcx - bsz / 2.0, bcy - bsz / 2.0, bsz, bsz, 15.0 * sc, 400, icon, WHITE, DT_CENTER);
+            });
+            hits.push((bcx - bsz / 2.0, bcy - bsz / 2.0, bcx + bsz / 2.0, bcy + bsz / 2.0, ACT_RADIO_TOGGLE));
+        }
+        None => {
+            c.text(tr("Elige una emisora", "Pick a station"), tx, y0 + 27.0 * sc, tw, 22.0 * sc, 15.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
+            c.text(tr("Primero el país y luego la emisora", "First the country, then the station"), tx, y0 + 49.0 * sc, tw, 16.0 * sc, 10.5 * sc, 400, "Segoe UI", soft, DT_LEFT);
+        }
+    }
+    // volumen:  🔈  −  ▬▬▬▬▬  +  80 %
+    let vy = y0 + ch - 15.0 * sc;
+    let br = 9.0 * sc;
+    c.text("\u{E767}", pad + 12.0 * sc, vy - 8.0 * sc, 16.0 * sc, 16.0 * sc, 11.5 * sc, 400, icon, DIM, DT_CENTER);
+    let minus_x = pad + 12.0 * sc + 22.0 * sc + br;
+    let plus_x = pad + cw - 12.0 * sc - 38.0 * sc - br;
+    for (x, label, act) in [(minus_x, "−", ACT_RADIO_VOL_DOWN), (plus_x, "+", ACT_RADIO_VOL_UP)] {
+        c.round_rect(x - br, vy - br, br * 2.0, br * 2.0, br, WHITE, if hover == act { 0.24 } else { 0.1 });
+        c.text(label, x - br, vy - br - 1.0 * sc, br * 2.0, br * 2.0, 11.5 * sc, 600, "Segoe UI", WHITE, DT_CENTER);
+        hits.push((x - br - 2.0 * sc, vy - br - 2.0 * sc, x + br + 2.0 * sc, vy + br + 2.0 * sc, act));
+    }
+    let (v0, v1) = (minus_x + br + 8.0 * sc, plus_x - br - 8.0 * sc);
+    c.capsule_h(v0, v1, vy, 2.0 * sc, WHITE, 0.14);
+    c.capsule_h(v0, v0 + ((v1 - v0) * n.volume).max(4.0 * sc), vy, 2.0 * sc, AIR_COL.mix(WHITE, 0.25), 1.0);
+    c.text(&format!("{:.0} %", n.volume * 100.0), pad + cw - 12.0 * sc - 38.0 * sc, vy - 8.0 * sc, 38.0 * sc, 16.0 * sc, 10.0 * sc, 600, "Segoe UI", soft, DT_RIGHT);
+
+    // ---- navegación: continentes (selector de país) o «‹ Países» + país elegido (emisoras)
+    let (ty, th) = (y0 + ch + 8.0 * sc, RADIO_NAV_H * sc);
+    if picking {
+        let gap = 6.0 * sc;
+        let nc = radio::CONTINENTS.len() as f32;
+        let tabw = (cw - gap * (nc - 1.0)) / nc;
+        for (i, k) in radio::CONTINENTS.iter().enumerate() {
+            let x = pad + i as f32 * (tabw + gap);
+            let act = ACT_RADIO_CONTINENT + i as u32;
+            let label = tr(k.0, k.1);
+            // con búsqueda se muestran países de todos los continentes: ninguno queda marcado
+            if i == continent && query.trim().is_empty() {
+                c.raw(|c| {
+                    c.round_rect(x, ty, tabw, th, th / 2.0, AIR_COL, 0.9);
+                    c.text(label, x, ty, tabw, th, 10.5 * sc, 600, "Segoe UI", WHITE, DT_CENTER);
+                });
+            } else {
+                c.round_rect(x, ty, tabw, th, th / 2.0, WHITE, if hover == act { 0.2 } else { 0.08 });
+                c.text(label, x, ty, tabw, th, 10.5 * sc, 600, "Segoe UI", soft, DT_CENTER);
+            }
+            hits.push((x, ty, x + tabw, ty + th, act));
+        }
+    } else {
+        let back = format!("‹  {}", tr("Países", "Countries"));
+        let bw = c.text_width(&back, 10.5 * sc, 600, "Segoe UI") + 22.0 * sc;
+        c.round_rect(pad, ty, bw, th, th / 2.0, WHITE, if hover == ACT_RADIO_BACK { 0.24 } else { 0.1 });
+        c.text(&back, pad, ty, bw, th, 10.5 * sc, 600, "Segoe UI", soft, DT_CENTER);
+        hits.push((pad, ty, pad + bw, ty + th, ACT_RADIO_BACK));
+        let code_w = badge(c, pad + bw + 10.0 * sc, ty + th / 2.0, &country, 8.5 * sc, AIR_COL.mix(WHITE, 0.2), sc, 0.0);
+        let nx = pad + bw + 10.0 * sc + code_w + 7.0 * sc;
+        c.text(&radio::country_label(&country), nx, ty, pad + cw - nx, th, 12.5 * sc, 600, "Segoe UI", WHITE, DT_LEFT | DT_END_ELLIPSIS);
+    }
+
+    // ---- búsqueda: filtra países o emisoras al escribir (y consulta el directorio del país)
+    let (sy, sh) = (ty + th + 8.0 * sc, RADIO_SEARCH_H * sc);
+    let focus = RADIO_FOCUS.with(|f| f.get());
+    c.round_rect(pad, sy, cw, sh, sh / 2.0, WHITE, if focus { 0.16 } else if hover == ACT_RADIO_SEARCH { 0.12 } else { 0.07 });
+    if focus {
+        c.raw(|c| c.round_rect(pad + 10.0 * sc, sy + sh - 2.0 * sc, cw - 20.0 * sc, 1.5 * sc, 1.0, AIR_COL, 0.9));
+    }
+    c.text("\u{E721}", pad + 6.0 * sc, sy, 22.0 * sc, sh, 10.5 * sc, 400, icon, DIM, DT_CENTER);
+    let (qx, qw) = (pad + 30.0 * sc, cw - 60.0 * sc);
+    if query.is_empty() {
+        let hint = match (picking, focus) {
+            (true, _) => tr("Buscar país…", "Search country…"),
+            (false, true) => tr("Escribe el nombre, la ciudad o el género…", "Type a name, city or genre…"),
+            (false, false) => tr("Buscar emisora…", "Search station…"),
+        };
+        c.text(hint, qx, sy, qw, sh, 11.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    } else {
+        c.text(&query, qx, sy, qw, sh, 11.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
+        let (xx, xr) = (pad + cw - 15.0 * sc, 8.5 * sc);
+        c.round_rect(xx - xr, sy + sh / 2.0 - xr, xr * 2.0, xr * 2.0, xr, WHITE, if hover == ACT_RADIO_CLEAR { 0.24 } else { 0.1 });
+        c.text("\u{E711}", xx - xr, sy + sh / 2.0 - xr, xr * 2.0, xr * 2.0, 7.5 * sc, 400, icon, soft, DT_CENTER);
+        hits.push((xx - xr - 3.0 * sc, sy, pad + cw, sy + sh, ACT_RADIO_CLEAR));
+    }
+    if focus && (t * 2.0) as u32 % 2 == 0 {
+        let cx = qx + if query.is_empty() { 0.0 } else { c.text_width(&query, 11.0 * sc, 600, "Segoe UI").min(qw) + 1.5 * sc };
+        c.line(cx, sy + 7.0 * sc, cx, sy + sh - 7.0 * sc, 1.2 * sc, WHITE, 0.9);
+    }
+    hits.push((pad, sy, pad + cw - 28.0 * sc, sy + sh, ACT_RADIO_SEARCH));
+
+    // ---- lista: países (en columnas) o emisoras
+    let (ly, rh) = (sy + sh + 8.0 * sc, RADIO_ROW_H * sc);
+    let lh = RADIO_ROWS as f32 * rh + 8.0 * sc;
+    card(c, pad, ly, cw, lh, sc);
+    // filas en total (los países van de `RADIO_COLS` en `RADIO_COLS`) y desplazamiento acotado
+    let total = if picking { countries.len().div_ceil(RADIO_COLS) } else { list.len() };
+    let max_scroll = total.saturating_sub(RADIO_ROWS);
+    let scroll = RADIO_SCROLL.with(|s| {
+        s.set(s.get().min(max_scroll));
+        s.get()
+    });
+    if total == 0 {
+        let msg = if !query.trim().is_empty() {
+            if searching { tr("Buscando en el directorio…", "Searching the directory…") } else { tr("Sin resultados", "No results") }
+        } else if failed && !loading {
+            tr("Sin conexión con el directorio de emisoras", "Cannot reach the station directory")
+        } else if !picking && !loading {
+            tr("No hay emisoras de este país en el directorio", "The directory has no stations for this country")
+        } else {
+            tr("Cargando emisoras…", "Loading stations…")
+        };
+        c.text(msg, pad, ly, cw, lh, 11.0 * sc, 400, "Segoe UI", DIM, DT_CENTER);
+    }
+    if picking {
+        let colw = (cw - 12.0 * sc) / RADIO_COLS as f32;
+        for row in 0..RADIO_ROWS {
+            for col in 0..RADIO_COLS {
+                let idx = (scroll + row) * RADIO_COLS + col;
+                let Some((code, name)) = countries.get(idx) else { break };
+                let (x, y) = (pad + 3.0 * sc + col as f32 * colw, ly + 4.0 * sc + row as f32 * rh);
+                let act = ACT_RADIO_COUNTRY + idx as u32;
+                if hover == act {
+                    c.round_rect(x, y + 1.0, colw - 3.0 * sc, rh - 2.0, 6.0 * sc, WHITE, 0.12);
+                }
+                badge(c, x + 7.0 * sc, y + rh / 2.0, code, 8.5 * sc, DIM, sc, 24.0 * sc);
+                c.text(name, x + 38.0 * sc, y, colw - 44.0 * sc, rh, 11.5 * sc, 600, "Segoe UI", Rgb::u8(228, 232, 242), DT_LEFT | DT_END_ELLIPSIS);
+                hits.push((x, y, x + colw - 3.0 * sc, y + rh, act));
+            }
+        }
+    }
+    for row in 0..RADIO_ROWS {
+        let idx = scroll + row;
+        let Some(s) = list.get(idx) else { break };
+        let y = ly + 4.0 * sc + row as f32 * rh;
+        let act = ACT_RADIO_STATION + idx as u32;
+        let current = n.station.as_ref().is_some_and(|c| c.url == s.url);
+        if current {
+            c.raw(|c| c.round_rect(pad + 3.0 * sc, y + 1.0, cw - 10.0 * sc, rh - 2.0, 6.0 * sc, AIR_COL, 0.2));
+        } else if hover == act {
+            c.round_rect(pad + 3.0 * sc, y + 1.0, cw - 10.0 * sc, rh - 2.0, 6.0 * sc, WHITE, 0.1);
+        }
+        // marcador: ecualizador si suena, nota si es la elegida, número en las demás
+        let (mx, myc) = (pad + 18.0 * sc, y + rh / 2.0);
+        if current && n.on_air() {
+            for k in 0..3 {
+                let bh = (0.3 + 0.7 * (t * (5.0 + k as f32 * 1.9) + k as f32 * 1.3).sin().abs()) * 6.5 * sc;
+                let bx = mx + (k as f32 - 1.0) * 4.0 * sc;
+                c.raw(|c| c.line(bx, myc - bh, bx, myc + bh, 2.2 * sc, AIR_COL, 1.0));
+            }
+        } else if current {
+            draw_note(c, mx, myc, 8.5 * sc, false, t);
+        } else {
+            c.text(&(idx + 1).to_string(), pad + 5.0 * sc, y, 26.0 * sc, rh, 9.0 * sc, 400, "Segoe UI", DIM, DT_CENTER);
+        }
+        let nx = pad + 35.0 * sc;
+        let dw = cw * 0.32;
+        let nw = cw - (nx - pad) - dw - 14.0 * sc;
+        c.text(&s.name, nx, y, nw, rh, 12.0 * sc, if current { 700 } else { 600 }, "Segoe UI", if current { WHITE } else { Rgb::u8(228, 232, 242) }, DT_LEFT | DT_END_ELLIPSIS);
+        let detail = match (s.place.is_empty(), s.bitrate > 0) {
+            (false, true) => format!("{} · {}k", s.place, s.bitrate),
+            (false, false) => s.place.clone(),
+            (true, true) => format!("{} {}k", s.codec, s.bitrate),
+            (true, false) => s.codec.clone(),
+        };
+        c.text(&detail, pad + cw - dw - 10.0 * sc, y, dw, rh, 9.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
+        hits.push((pad, y, pad + cw - 6.0 * sc, y + rh, act));
+    }
+    // barra de desplazamiento
+    if max_scroll > 0 {
+        let (sx, s0, s1) = (pad + cw - 4.5 * sc, ly + 8.0 * sc, ly + lh - 8.0 * sc);
+        c.line(sx, s0, sx, s1, 2.0 * sc, WHITE, 0.1);
+        let frac = RADIO_ROWS as f32 / total as f32;
+        let th0 = s0 + (s1 - s0) * (1.0 - frac) * scroll as f32 / max_scroll as f32;
+        c.line(sx, th0, sx, th0 + (s1 - s0) * frac, 2.0 * sc, WHITE, 0.45);
+    }
+
+    // ---- pie: posición y flechas de página
+    let fy = ly + lh + 6.0 * sc;
+    if total > 0 {
+        let per = if picking { RADIO_COLS } else { 1 };
+        let count = if picking { countries.len() } else { list.len() };
+        let note = if picking {
+            tr("elige un país", "pick a country")
+        } else if searching {
+            tr("buscando más en el directorio…", "searching the directory…")
+        } else {
+            tr("rueda del mouse para desplazar", "mouse wheel to scroll")
+        };
+        let pos = format!("{}–{} / {}   ·   {note}", scroll * per + 1, ((scroll + RADIO_ROWS) * per).min(count), count);
+        c.text(&pos, pad + 2.0 * sc, fy, cw - 56.0 * sc, 20.0 * sc, 9.0 * sc, 400, "Segoe UI", DIM, DT_LEFT | DT_END_ELLIPSIS);
+    }
+    for (i, (glyph, act, on)) in [("\u{E70E}", ACT_RADIO_PAGE_UP, scroll > 0), ("\u{E70D}", ACT_RADIO_PAGE_DOWN, scroll < max_scroll)].iter().enumerate() {
+        let x = pad + cw - 48.0 * sc + i as f32 * 26.0 * sc;
+        c.round_rect(x, fy, 22.0 * sc, 20.0 * sc, 6.0 * sc, WHITE, if *on && hover == *act { 0.24 } else { 0.08 });
+        c.text(glyph, x, fy, 22.0 * sc, 20.0 * sc, 9.0 * sc, 400, icon, if *on { soft } else { GRAY }, DT_CENTER);
+        if *on {
+            hits.push((x, fy, x + 22.0 * sc, fy + 20.0 * sc, *act));
+        }
+    }
+    POPUP_HITS.with(|h| {
+        let mut h = h.borrow_mut();
+        h.retain(|r| r.4 < ACT_RADIO_TOGGLE);
+        h.extend(hits);
+    });
+}
+
 // ----------------------------------------------------------------------- ventiladores y energía (ventana de sistema)
 const FAN_CARD_H: f32 = 56.0;
 const POWER_CARD_H: f32 = 62.0;
@@ -2049,7 +2470,11 @@ fn paint_apps_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
 // ----------------------------------------------------------------------- distribución de la ventana de sistema
 /// Ancho de la ventana flotante: la de sistema usa dos columnas de tarjetas
 fn popup_w(kind: Kind) -> f32 {
-    if kind == Kind::System { POPUP_W * 2.0 - 16.0 } else { POPUP_W }
+    match kind {
+        Kind::System => POPUP_W * 2.0 - 16.0,
+        Kind::Radio => RADIO_POPUP_W,
+        _ => POPUP_W,
+    }
 }
 
 const FPS_CARD_MIN: f32 = 84.0;
@@ -2307,6 +2732,7 @@ unsafe fn paint_popup_window(hwnd: HWND) {
                 Kind::Ip => paint_popup_ip(surf, wf, hf, sc, &s, tt, !full),
                 Kind::Usage => paint_popup_ai(surf, wf, hf, sc, &AiView::from_cfg(&app.cfg)),
                 Kind::Media => paint_popup_media(surf, wf, hf, sc, &s, &mut app.popup_disp, tt, style),
+                Kind::Radio => paint_popup_radio(surf, wf, hf, sc, tt),
             }
             surf.blit(hdc);
         }
@@ -2327,6 +2753,11 @@ fn dbg(msg: &str) {
             let _ = writeln!(f, "{:?} {msg}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
         }
     }
+}
+
+thread_local! {
+    /// desde cuándo el cursor está fuera del panel y de su ventana flotante
+    static POPUP_LEFT: RefCell<Option<Instant>> = const { RefCell::new(None) };
 }
 
 /// Ventana flotante: aparece si el cursor lleva 300 ms sobre un panel; sigue abierta mientras el
@@ -2354,6 +2785,9 @@ unsafe fn update_popup() {
             let _ = GetWindowRect(app.popup, &mut r);
             inside(&r)
         };
+        if over.is_some() || on_popup {
+            POPUP_LEFT.with(|l| *l.borrow_mut() = None);
+        }
         match over {
             Some((r, sc, tb_key, kind)) => {
                 let since = *app.hover_since.get_or_insert_with(Instant::now);
@@ -2375,6 +2809,11 @@ unsafe fn update_popup() {
                     }
                     app.popup_scale = sc;
                     app.popup_kind = Some(kind);
+                    if kind == Kind::Radio {
+                        // catálogo del país elegido: se descarga la primera vez y se renueva a diario
+                        let country = radio::radio().country.clone();
+                        radio::ensure_list(&country);
+                    }
                     let (pw, ph) = ((popup_w(kind) * sc) as i32, (popup_h(kind) * sc) as i32);
                     let bar = app.bars.iter().find(|b| b.key == tb_key);
                     let mon = bar.map(|b| b.mon).unwrap_or(RECT { left: r.left - pw, top: r.top - ph - 40, right: r.right + pw, bottom: r.bottom + ph + 40 });
@@ -2397,8 +2836,16 @@ unsafe fn update_popup() {
             None if on_popup => {} // el cursor pasó del panel a la ventana: se mantiene
             None => {
                 app.hover_since = None;
-                if app.popup_shown {
+                // la ventana de radio se maneja con el ratón: al cruzar el hueco entre el panel y la
+                // ventana no se cierra al instante (0,4 s de margen)
+                let left = POPUP_LEFT.with(|l| *l.borrow_mut().get_or_insert_with(Instant::now));
+                // y mientras se escribe en su buscador sigue abierta aunque el cursor se salga
+                let grace = app.popup_kind == Some(Kind::Radio) && (left.elapsed().as_millis() < 400 || RADIO_FOCUS.with(|f| f.get()));
+                if app.popup_shown && !grace {
                     dbg("OCULTAR");
+                    if app.popup_kind == Some(Kind::Radio) && !radio::radio().query.is_empty() {
+                        radio::set_query(""); // la próxima vez se abre con la lista completa
+                    }
                     let _ = ShowWindow(app.popup, SW_HIDE);
                     app.popup_shown = false;
                     app.popup_kind = None;
@@ -2437,6 +2884,10 @@ unsafe fn update_popup() {
                     for r in sys_anim_rects() {
                         let _ = InvalidateRect(app.popup, Some(&r), FALSE);
                     }
+                }
+                // radio: ~8 fps (ecualizador, halo y cambios de estado al conectar)
+                Some(Kind::Radio) if frame % 8 == 0 => {
+                    let _ = InvalidateRect(app.popup, None, FALSE);
                 }
                 _ => {}
             }
@@ -2868,6 +3319,7 @@ fn v_height(k: Kind, show_ip: bool, ai_rows: usize) -> f32 {
         Kind::Usage => 6.0 + 30.0 * ai_rows.max(1) as f32,
         Kind::System => 144.0,
         Kind::Media => 0.0, // depende del ancho (media_v_height)
+        Kind::Radio => 48.0,
     }
 }
 
@@ -3085,7 +3537,7 @@ unsafe fn place_vertical(panels: &mut [Panel], b: &Taskbar, cfg: &Config, hide: 
     let x = b.rect.left + m;
     let w = (b.rect.right - b.rect.left) - 2 * m;
     let mut bottom = b.tray_top - (8.0 * sc) as i32;
-    for k in [Kind::Ip, Kind::Usage, Kind::System] {
+    for k in CHAIN {
         let Some(p) = panels.iter_mut().find(|p| p.kind == k && p.tb_key == b.key) else { continue };
         p.scale = sc;
         p.vertical = true;
@@ -3146,6 +3598,8 @@ unsafe fn render(p: &mut Panel, s: &state::State, style: &str, view: &AiView, sh
         (Kind::Usage, true) => paint_ai_v(&mut surf, wf, hf, sc, view),
         (Kind::System, true) => paint_system_v(&mut surf, wf, hf, sc, s),
         (Kind::Media, true) => paint_media_v(&mut surf, wf, hf, sc, s, p, style, t),
+        (Kind::Radio, v) if p.compact || v => paint_radio_compact(&mut surf, wf, hf, sc, &radio::now(), t),
+        (Kind::Radio, _) => paint_radio(&mut surf, wf, hf, sc, &radio::now(), t),
     }
     surf.present(p.hwnd);
     p.surf = Some(surf);
@@ -3308,9 +3762,9 @@ unsafe fn sync(app: &mut App) {
         // ¿Choca la cadena de paneles de la derecha con los iconos de apps? → sistema e IA en modo icono
         // (formato elegido por panel: "icon" fijo, "full" fijo, "auto" = icono solo si no cabe)
         let present = |k: Kind| app.panels.iter().any(|p| p.kind == k && p.tb_key == b.key);
-        let modes: Vec<(Kind, &str)> = [Kind::Ip, Kind::Usage, Kind::System].iter().map(|k| (*k, panel_mode(&app.cfg, *k))).collect();
+        let modes: Vec<(Kind, &str)> = CHAIN.iter().map(|k| (*k, panel_mode(&app.cfg, *k))).collect();
         let mode = |k: Kind| modes.iter().find(|m| m.0 == k).map(|m| m.1).unwrap_or("full");
-        let full: Vec<(Kind, i32)> = [Kind::Ip, Kind::Usage, Kind::System]
+        let full: Vec<(Kind, i32)> = CHAIN
             .iter()
             .filter(|k| present(**k))
             .map(|k| (*k, ((if mode(*k) == "icon" { compact_width(*k) } else { k.width() }) * b.scale) as i32))
@@ -3335,7 +3789,7 @@ unsafe fn sync(app: &mut App) {
         };
         // Formato y ancho definitivos de cada panel de la derecha
         let mut chain: Vec<(Kind, i32)> = Vec::new();
-        for k in [Kind::Ip, Kind::Usage, Kind::System] {
+        for k in CHAIN {
             let Some(p) = app.panels.iter_mut().find(|p| p.kind == k && p.tb_key == b.key) else { continue };
             let was = p.compact;
             p.compact = match mode(k) {
@@ -3357,7 +3811,7 @@ unsafe fn sync(app: &mut App) {
             placed = chain_layout(b, &chain, &app.offs, i32::MIN);
         }
         let chain_left = placed.iter().map(|c| c.1).min().unwrap_or(b.right);
-        for k in [Kind::Ip, Kind::Usage, Kind::System, Kind::Media] {
+        for k in KINDS {
             let Some(p) = app.panels.iter_mut().find(|p| p.kind == k && p.tb_key == b.key) else { continue };
             p.scale = b.scale;
             p.vertical = false;
@@ -3520,6 +3974,9 @@ const ID_FMT_AI_FULL: usize = 116;
 const ID_FMT_AI_ICON: usize = 117;
 const ID_SPEED_BASE: usize = 93; // +índice de speedtest::PROVIDERS (93..=96)
 const ID_EXIT: usize = 99;
+const ID_FMT_RADIO_AUTO: usize = 210;
+const ID_FMT_RADIO_FULL: usize = 211;
+const ID_FMT_RADIO_ICON: usize = 212;
 
 /// Agrega un submenú con texto traducido
 unsafe fn append_sub(menu: HMENU, sub: HMENU, text: &str) {
@@ -3589,6 +4046,11 @@ unsafe fn show_menu(main: HWND) {
         let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
         append(sub, ID_FMT_NET_FULL, tr("Red: panel", "Network: panel"), net_mode == "full");
         append(sub, ID_FMT_NET_ICON, tr("Red: icono", "Network: icon"), net_mode == "icon");
+        let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
+        let radio_mode = with_app(|a| panel_mode(&a.cfg, Kind::Radio)).unwrap_or("auto");
+        append(sub, ID_FMT_RADIO_AUTO, tr("Radio: automático (icono si no cabe)", "Radio: automatic (icon if it does not fit)"), radio_mode == "auto");
+        append(sub, ID_FMT_RADIO_FULL, tr("Radio: panel", "Radio: panel"), radio_mode == "full");
+        append(sub, ID_FMT_RADIO_ICON, tr("Radio: icono (nota roja)", "Radio: icon (red note)"), radio_mode == "icon");
         append_sub(menu, sub, tr("Formato de los paneles", "Panel format"));
     }
     let cur_style = with_app(|a| spectrum_style(&a.cfg)).unwrap_or("wave");
@@ -3714,7 +4176,7 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
         let mut save = false;
         match cmd {
             ID_RESET_POS => {
-                app.offs = [8; 3];
+                app.offs = [8; 4];
                 config::save_offsets(&app.offs);
             }
             c if (ID_PANEL_BASE..ID_PANEL_BASE + KINDS.len()).contains(&c) => {
@@ -3727,7 +4189,7 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
                 app.cfg.v["PopupStyle"] = serde_json::json!(POPUP_STYLES[c - ID_POPUP_STYLE_BASE].0);
                 save = true;
             }
-            ID_FMT_SYS_AUTO | ID_FMT_SYS_FULL | ID_FMT_SYS_ICON | ID_FMT_NET_FULL | ID_FMT_NET_ICON | ID_FMT_AI_AUTO | ID_FMT_AI_FULL | ID_FMT_AI_ICON => {
+            ID_FMT_SYS_AUTO | ID_FMT_SYS_FULL | ID_FMT_SYS_ICON | ID_FMT_NET_FULL | ID_FMT_NET_ICON | ID_FMT_AI_AUTO | ID_FMT_AI_FULL | ID_FMT_AI_ICON | ID_FMT_RADIO_AUTO | ID_FMT_RADIO_FULL | ID_FMT_RADIO_ICON => {
                 let (k, v) = match cmd {
                     ID_FMT_AI_AUTO => (Kind::Usage, "auto"),
                     ID_FMT_AI_FULL => (Kind::Usage, "full"),
@@ -3736,6 +4198,9 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
                     ID_FMT_SYS_FULL => (Kind::System, "full"),
                     ID_FMT_SYS_ICON => (Kind::System, "icon"),
                     ID_FMT_NET_FULL => (Kind::Ip, "full"),
+                    ID_FMT_RADIO_AUTO => (Kind::Radio, "auto"),
+                    ID_FMT_RADIO_FULL => (Kind::Radio, "full"),
+                    ID_FMT_RADIO_ICON => (Kind::Radio, "icon"),
                     _ => (Kind::Ip, "icon"),
                 };
                 if !app.cfg.v["PanelStyle"].is_object() {
@@ -4027,7 +4492,7 @@ unsafe fn on_mouse(hwnd: HWND, msg: u32, lp: LPARAM) -> bool {
             _ => {}
         },
         // Red, IA y sistema: arrastrar con el botón izquierdo mueve solo ese panel por la barra
-        (Kind::Ip | Kind::Usage | Kind::System, WM_LBUTTONDOWN) => {
+        (Kind::Ip | Kind::Usage | Kind::System | Kind::Radio, WM_LBUTTONDOWN) => {
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
             let mut r = RECT::default();
@@ -4050,7 +4515,7 @@ unsafe fn on_mouse(hwnd: HWND, msg: u32, lp: LPARAM) -> bool {
                 SetCapture(hwnd);
             }
         }
-        (Kind::Ip | Kind::Usage | Kind::System, WM_MOUSEMOVE) => {
+        (Kind::Ip | Kind::Usage | Kind::System | Kind::Radio, WM_MOUSEMOVE) => {
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
             with_app(|app| {
@@ -4065,7 +4530,7 @@ unsafe fn on_mouse(hwnd: HWND, msg: u32, lp: LPARAM) -> bool {
                 sync(app);
             });
         }
-        (Kind::Ip | Kind::Usage | Kind::System, WM_LBUTTONUP) => {
+        (Kind::Ip | Kind::Usage | Kind::System | Kind::Radio, WM_LBUTTONUP) => {
             let _ = ReleaseCapture();
             with_app(|app| {
                 if app.drag.take().is_some_and(|d| d.moved) {
@@ -4117,7 +4582,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MOUSEMOVE | WM_LBUTTONUP if with_app(|a| a.popup == hwnd).unwrap_or(false) => {
             // ventana flotante: botones (p. ej. iniciar speed test)
             let (x, y) = ((lp.0 & 0xFFFF) as i16 as f32, ((lp.0 >> 16) & 0xFFFF) as i16 as f32);
-            let hit = popup_hit(x, y);
+            // cada zona pertenece a una ventana: las de otra (que siguen en la lista) no cuentan
+            let kind = with_app(|a| a.popup_kind).flatten();
+            let hit = match (kind, popup_hit(x, y)) {
+                (Some(Kind::Radio), h) if h >= ACT_RADIO_TOGGLE => h,
+                (Some(Kind::Ip), h) if h < ACT_RADIO_TOGGLE => h,
+                _ => 0,
+            };
+            if msg == WM_LBUTTONUP && kind == Some(Kind::Radio) {
+                radio_click(hit);
+                if hit == ACT_RADIO_SEARCH {
+                    // el teclado solo llega a la ventana activa: se activa al pulsar el buscador
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = SetFocus(hwnd);
+                    RADIO_FOCUS.with(|f| f.set(GetFocus() == hwnd));
+                }
+            }
             if msg == WM_LBUTTONUP && hit == ACT_SPEEDTEST {
                 speedtest::start(speedtest::selected());
             }
@@ -4133,6 +4613,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if POPUP_HOVER.with(|h| h.replace(hit)) != hit || msg == WM_LBUTTONUP {
                 let _ = InvalidateRect(hwnd, None, FALSE);
             }
+            return LRESULT(0);
+        }
+        WM_CHAR if with_app(|a| a.popup == hwnd && a.popup_kind == Some(Kind::Radio)).unwrap_or(false) => {
+            radio_char(wp.0 as u32);
+            let _ = InvalidateRect(hwnd, None, FALSE);
+            return LRESULT(0);
+        }
+        WM_KILLFOCUS if with_app(|a| a.popup == hwnd).unwrap_or(false) => {
+            RADIO_FOCUS.with(|f| f.set(false));
+            return LRESULT(0);
+        }
+        WM_MOUSEWHEEL if with_app(|a| a.popup == hwnd && a.popup_kind == Some(Kind::Radio)).unwrap_or(false) => {
+            // lista de emisoras: dos filas por paso de rueda
+            let delta = ((wp.0 >> 16) & 0xFFFF) as i16;
+            radio_scroll(if delta > 0 { -2 } else { 2 });
+            POPUP_HOVER.with(|h| h.set(0)); // la fila bajo el cursor cambió: se recalcula al mover
+            let _ = InvalidateRect(hwnd, None, FALSE);
             return LRESULT(0);
         }
         WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP => {
@@ -4372,6 +4869,7 @@ fn demo_panel(kind: Kind) -> Panel {
 /// `taskbar-panels.exe --render-demo <carpeta>`: genera las imágenes en modo oscuro y, con el
 /// sufijo `-light`, en modo claro
 fn render_demo(dir: &str) {
+    radio::demo();
     demo_state();
     for light in [false, true] {
         render::set_light(light);
@@ -4389,7 +4887,7 @@ fn render_demo_theme(dir: &str, light: bool) {
     let bar_bg = if light { (238u8, 240u8, 245u8) } else { (26u8, 30u8, 48u8) };
 
     // ---- barra horizontal: multimedia a la izquierda, sistema · consumo · red a la derecha
-    let widths = [(Kind::Media, 660.0), (Kind::System, 236.0), (Kind::Usage, 150.0), (Kind::Ip, 112.0)];
+    let widths = [(Kind::Media, 660.0), (Kind::Radio, 176.0), (Kind::System, 236.0), (Kind::Usage, 150.0), (Kind::Ip, 112.0)];
     let mut parts = Vec::new();
     for (kind, lw) in widths {
         let w = (lw * sc) as i32;
@@ -4403,6 +4901,7 @@ fn render_demo_theme(dir: &str, light: bool) {
                 Kind::Usage => paint_ai(&mut c, w as f32, tb_h as f32, sc, &demo_view),
                 Kind::System => paint_system(&mut c, w as f32, tb_h as f32, sc, &s),
                 Kind::Media => paint_media(&mut c, w as f32, tb_h as f32, sc, &s, &mut p, "wave", t),
+                Kind::Radio => paint_radio(&mut c, w as f32, tb_h as f32, sc, &radio::now(), t),
             }
         }
         parts.push((kind, w, c.pixels()));
@@ -4427,16 +4926,18 @@ fn render_demo_theme(dir: &str, light: bool) {
     }
 
     // ---- ventanas flotantes sobre un fondo degradado (simula el escritorio tras el vidrio)
-    for (name, kind) in [("popup-sistema", Kind::System), ("popup-red", Kind::Ip), ("popup-consumo", Kind::Usage), ("popup-multimedia", Kind::Media)] {
+    for (name, kind) in [("popup-sistema", Kind::System), ("popup-red", Kind::Ip), ("popup-consumo", Kind::Usage), ("popup-multimedia", Kind::Media), ("popup-radio", Kind::Radio), ("popup-radio-paises", Kind::Radio)] {
         let (pw, ph) = ((popup_w(kind) * sc) as i32, (popup_h(kind) * sc) as i32);
         let (Some(mut c), Some(mut bg)) = (Surface::new(pw, ph), Surface::new(pw + 48, ph + 48)) else { continue };
         let mut disp = Vec::new();
+        radio::demo_picker(name == "popup-radio-paises");
         for _ in 0..30 {
             match kind {
                 Kind::System => paint_popup_system(&mut c, pw as f32, ph as f32, sc, &s, 3.0, false),
                 Kind::Ip => paint_popup_ip(&mut c, pw as f32, ph as f32, sc, &s, 3.0, false),
                 Kind::Usage => paint_popup_ai(&mut c, pw as f32, ph as f32, sc, &demo_view),
                 Kind::Media => paint_popup_media(&mut c, pw as f32, ph as f32, sc, &s, &mut disp, 3.0, "wave"),
+                Kind::Radio => paint_popup_radio(&mut c, pw as f32, ph as f32, sc, 3.0),
             }
         }
         if light {
@@ -4455,7 +4956,7 @@ fn render_demo_theme(dir: &str, light: bool) {
     // ---- barra vertical (ancho 52 px lógicos)
     let vw = (44.0 * sc) as i32;
     let mut blocks = Vec::new();
-    for kind in [Kind::Media, Kind::System, Kind::Usage, Kind::Ip] {
+    for kind in [Kind::Media, Kind::Radio, Kind::System, Kind::Usage, Kind::Ip] {
         // por defecto, en barras verticales sistema, IA y red van como icono
         let h = if kind == Kind::Media { media_v_height(vw as f32, sc) as i32 } else { (vw as f32).min(48.0 * sc) as i32 };
         let Some(mut c) = Surface::new(vw, h) else { continue };
@@ -4469,6 +4970,7 @@ fn render_demo_theme(dir: &str, light: bool) {
                 Kind::Usage => paint_ai_compact(&mut c, vw as f32, h as f32, sc, &demo_view),
                 Kind::System => paint_system_compact(&mut c, vw as f32, h as f32, sc, &s),
                 Kind::Media => paint_media_v(&mut c, vw as f32, h as f32, sc, &s, &mut p, "wave", t),
+                Kind::Radio => paint_radio_compact(&mut c, vw as f32, h as f32, sc, &radio::now(), t),
             }
         }
         blocks.push((h, c.pixels()));
@@ -4526,6 +5028,11 @@ fn main() {
             }
         }
         let _ = std::fs::write(&args[2], out);
+        return;
+    }
+    // diagnóstico: catálogo de emisoras por región y prueba de reproducción (en silencio)
+    if args.len() >= 3 && args[1] == "--radio-report" {
+        let _ = std::fs::write(&args[2], radio::report());
         return;
     }
     if args.len() >= 3 && args[1] == "--render-demo" {
@@ -4606,6 +5113,7 @@ fn main() {
         sys::spawn_procs_worker();
         media::spawn_media_worker();
         media::spawn_audio_worker();
+        radio::spawn_worker();
         net::spawn_net_worker();
         net::set_health(with_app(|a| a.cfg.v["NetHealth"].as_bool().unwrap_or(true)).unwrap_or(true));
         net::spawn_health_worker();

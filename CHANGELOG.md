@@ -2,6 +2,10 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## Unreleased
+
+- **Radio panel** (new): Internet radio stations from every country in the Americas and Europe (Radio Browser directory; each country catalog is cached and refreshed daily). On the taskbar it shows an **ON AIR** sign with the station name while it plays and, in icon mode, a red musical note. The popup lets you pick the country first and then the station, search by name, city or genre (also across the full directory of the country), stop or resume, adjust the volume and see the current station details. The station also shows up in the Windows media controls (and in the media panel, with its spectrum). Enable or disable it under *Panels → Radio*; choose its format (automatic, panel or icon) under *Panel format*. Diagnostics: `taskbar-panels.exe --radio-report <file>`.
+
 ## v1.4.0
 
 - **Connection health** (network panel): the router, the DNS server and the Internet are pinged every 2 s and compared hop by hop to tell where a problem is — *Unstable Wi-Fi*, *Router not responding*, *No Internet access*, *Internet dropping packets*, *High Internet latency* or *Slow DNS*. The panel shows a status dot (green, amber or red with a glow); the flyout adds a card with the diagnosis and a 2-minute timeline of latency and loss per hop. Targets that never answer pings are left out instead of raising false alarms. Can be turned off from the menu (*Connection health*) or with `"NetHealth": false`.

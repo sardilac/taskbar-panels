@@ -2,7 +2,7 @@
 //!
 //!   Displays             : "primary" | "all" | ["SAM7B0C", ...]
 //!   PanelDisplays        : { "MediaPanel": ["SDC420B"], ... }   (opcional, por panel)
-//!                          Paneles: NetworkPanel, UsagePanel, SystemPanel, MediaPanel
+//!                          Paneles: NetworkPanel, UsagePanel, SystemPanel, MediaPanel, RadioPanel
 //!   Panels               : { "MediaPanel": false, ... }         (opcional, activar/desactivar)
 //!   SecondaryRightMargin : px lógicos reservados al reloj en barras secundarias
 //!   MonitorIds           : código → nombre (informativo)
@@ -113,17 +113,17 @@ fn legacy_name(panel: &str) -> &str {
     if panel == "NetworkPanel" { "PublicIpTray" } else { panel }
 }
 
-/// Separación de cada panel de la derecha (red, IA, sistema) respecto al borde derecho útil de la
+/// Separación de cada panel de la derecha (red, IA, sistema, radio) respecto al borde derecho útil de la
 /// barra, en px lógicos. Migra el antiguo `Gap` único (toda la cadena se movía junta).
-pub fn load_offsets() -> [i32; 3] {
+pub fn load_offsets() -> [i32; 4] {
     let v = read_json("pos.json");
     let gap = v.as_ref().and_then(|v| v["Gap"].as_i64()).unwrap_or(8) as i32;
     let o = v.as_ref().map(|v| v["Offsets"].clone()).unwrap_or(Value::Null);
     let get = |k: &str| o[k].as_i64().map(|x| x.max(0) as i32).unwrap_or(gap);
-    [get("NetworkPanel"), get("UsagePanel"), get("SystemPanel")]
+    [get("NetworkPanel"), get("UsagePanel"), get("SystemPanel"), get("RadioPanel")]
 }
 
-pub fn save_offsets(o: &[i32; 3]) {
-    let v = json!({ "Offsets": { "NetworkPanel": o[0], "UsagePanel": o[1], "SystemPanel": o[2] } });
+pub fn save_offsets(o: &[i32; 4]) {
+    let v = json!({ "Offsets": { "NetworkPanel": o[0], "UsagePanel": o[1], "SystemPanel": o[2], "RadioPanel": o[3] } });
     let _ = std::fs::write(appdata_dir().join("pos.json"), v.to_string());
 }
