@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md) · **Español**
 
-## Sin publicar
+## v1.5.0
 
 - **Panel de radio** (nuevo): emisoras por Internet de todos los países de América y Europa (directorio Radio Browser; el catálogo de cada país se guarda y se renueva a diario). En la barra muestra el letrero **ON AIR** con el nombre de la emisora mientras suena y, en modo icono, una nota musical roja. La ventana flotante permite elegir primero el país y luego la emisora, buscar por nombre, ciudad o género (también en el directorio completo del país), detener o reanudar, ajustar el volumen y ver los datos de la emisora actual. La emisora también aparece en los controles multimedia de Windows (y en el panel multimedia, con su espectro). Se activa o desactiva en *Paneles → Radio* y su formato (automático, panel o icono) en *Formato de los paneles*. Diagnóstico: `taskbar-panels.exe --radio-report <archivo>`.
 

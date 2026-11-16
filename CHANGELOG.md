@@ -2,7 +2,7 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
-## Unreleased
+## v1.5.0
 
 - **Radio panel** (new): Internet radio stations from every country in the Americas and Europe (Radio Browser directory; each country catalog is cached and refreshed daily). On the taskbar it shows an **ON AIR** sign with the station name while it plays and, in icon mode, a red musical note. The popup lets you pick the country first and then the station, search by name, city or genre (also across the full directory of the country), stop or resume, adjust the volume and see the current station details. The station also shows up in the Windows media controls (and in the media panel, with its spectrum). Enable or disable it under *Panels → Radio*; choose its format (automatic, panel or icon) under *Panel format*. Diagnostics: `taskbar-panels.exe --radio-report <file>`.
 

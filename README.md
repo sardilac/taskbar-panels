@@ -3,12 +3,12 @@
 **English** · [Español](README.es.md)
 
 Modern, lightweight panels for the **Windows 11** taskbar, written in **Rust**:
-network, AI usage (Claude / GitHub Copilot / OpenAI / Anthropic / Gemini / DeepSeek / Kimi / Ollama / LM Studio), system (CPU, GPU, FPS, disks) and media.
+network, AI usage (Claude / GitHub Copilot / OpenAI / Anthropic / Gemini / DeepSeek / Kimi / Ollama / LM Studio), system (CPU, GPU, FPS, disks), media and Internet radio.
 Real transparency, 60 fps animations and frosted-glass flyouts with the details of each panel,
 all in a single process using ~5–10 MB of private memory and less than 1 % of one core.
 
-![Taskbar with the four panels (dark mode)](docs/images/barra.png)
-![Taskbar with the four panels (light mode)](docs/images/barra-light.png)
+![Taskbar with the five panels (dark mode)](docs/images/barra.png)
+![Taskbar with the five panels (light mode)](docs/images/barra-light.png)
 
 > Images are generated with sample data (`taskbar-panels.exe --render-demo`); the interface
 > follows the Windows language (Spanish or English).
@@ -26,6 +26,8 @@ all in a single process using ~5–10 MB of private memory and less than 1 % of 
 <p>
   <img src="docs/images/popup-sistema.png" width="300" alt="System flyout">
   <img src="docs/images/popup-multimedia.png" width="300" alt="Media flyout">
+  <img src="docs/images/popup-radio.png" width="300" alt="Radio flyout: stations">
+  <img src="docs/images/popup-radio-paises.png" width="300" alt="Radio flyout: countries">
 </p>
 <p>
   <img src="docs/images/popup-red.png" width="300" alt="Network flyout">

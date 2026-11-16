@@ -3,12 +3,12 @@
 [English](README.md) · **Español**
 
 Paneles modernos y ligeros para la barra de tareas de **Windows 11**, escritos en **Rust**:
-red, consumo de IA (Claude / GitHub Copilot), sistema (CPU, GPU, FPS, discos) y multimedia.
+red, consumo de IA (Claude / GitHub Copilot), sistema (CPU, GPU, FPS, discos), multimedia y radio por Internet.
 Transparencia real, animaciones a 60 fps y ventanas flotantes de vidrio esmerilado con el
 detalle de cada panel, todo en un solo proceso de ~5–10 MB de memoria privada y menos del 1 % de un núcleo.
 
-![Barra de tareas con los cuatro paneles (modo oscuro)](docs/images/es/barra.png)
-![Barra de tareas con los cuatro paneles (modo claro)](docs/images/es/barra-light.png)
+![Barra de tareas con los cinco paneles (modo oscuro)](docs/images/es/barra.png)
+![Barra de tareas con los cinco paneles (modo claro)](docs/images/es/barra-light.png)
 
 > Las imágenes se generan con datos de ejemplo (`taskbar-panels.exe --render-demo`).
 
@@ -25,6 +25,8 @@ detalle de cada panel, todo en un solo proceso de ~5–10 MB de memoria privada 
 <p>
   <img src="docs/images/es/popup-sistema.png" width="300" alt="Ventana flotante de sistema">
   <img src="docs/images/es/popup-multimedia.png" width="300" alt="Ventana flotante de multimedia">
+  <img src="docs/images/es/popup-radio.png" width="300" alt="Ventana flotante de radio: emisoras">
+  <img src="docs/images/es/popup-radio-paises.png" width="300" alt="Ventana flotante de radio: países">
 </p>
 <p>
   <img src="docs/images/es/popup-red.png" width="300" alt="Ventana flotante de red">
