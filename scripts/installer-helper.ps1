@@ -75,6 +75,15 @@ switch ($Action) {
     }
     'Unregister' {
         Stop-Panels
+        # si la app había recogido el cuadro de búsqueda de la barra (AutoSearchBox), vuelve a su modo original
+        $searchState = Join-Path $env:APPDATA 'TaskbarPanels\search.json'
+        if (Test-Path $searchState) {
+            try {
+                $st = Get-Content $searchState -Raw | ConvertFrom-Json
+                Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' -Name SearchboxTaskbarMode -Value ([int]$st.Mode) -Type DWord
+            } catch { }
+            Remove-Item $searchState -Force -ErrorAction SilentlyContinue
+        }
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     }
 }

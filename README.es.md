@@ -130,13 +130,14 @@ La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 - **Abrir uso de Claude / Copilot** (páginas web oficiales)
 - **Paneles**: activar o desactivar cada panel
 - **Pantallas**: todas, solo la principal o una selección de monitores
-- **Formato de los paneles**: sistema, IA, red y radio automáticos (icono si no caben, p. ej. con muchas ventanas abiertas), panel o icono
+- **Formato de los paneles**: sistema, IA, red y radio automáticos (icono si no caben, p. ej. con muchas ventanas abiertas), panel o icono. Cada pantalla se calcula con su ancho y escala: los paneles nunca tapan los iconos de las apps y, si como icono no caben en una pantalla, se estrechan y, en último caso, se ocultan en ella los más alejados del reloj hasta que haya sitio
 - **Estilo del espectro**: onda líquida, barras cápsula, LED segmentado, barras con reflejo o línea neón
 - **IA**: proveedor principal, activar/desactivar proveedores, **agregar** (API de OpenAI, API de Anthropic, Gemini, DeepSeek, Kimi, Ollama local y Cloud, LM Studio, personalizado por URL JSON), quitar y **token de GitHub para Copilot**
 - **Fondo de las ventanas**: vidrio esmerilado, cristal transparente, acrílico de Windows, mica u opaco (todos siguen el modo claro/oscuro)
 - **Proveedor del speed test**: Speedtest.net, Cloudflare, LibreSpeed o GCI
 - **Salud de la conexión**: activa o desactiva la comprobación continua de router / DNS / Internet
 - **Idioma / Language**: automático (idioma de Windows), español o inglés
+- **Ocultar el cuadro de búsqueda si falta espacio**: cuando en alguna pantalla los paneles no caben ni como iconos entre las apps y el reloj, oculta el cuadro de búsqueda de Windows y lo restaura solo cuando vuelve a haber sitio (también al salir). El ajuste de Windows es común a todas las pantallas
 - **Reiniciar posición**, **Salir**
 
 Además: los botones multimedia funcionan sin quitar el foco a la ventana activa, los paneles de red,
@@ -151,17 +152,18 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Pantallas donde se muestran los paneles (códigos EDID, ver `MonitorIds`) |
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Selección por panel: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Activar o desactivar paneles |
-| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Formato en la barra: panel con detalle o icono (`auto` = icono solo si no cabe). En barras verticales los tres van como icono salvo que se elija `"full"` |
+| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Formato en la barra: panel con detalle o icono (`auto` = icono solo si no cabe; `full` se respeta mientras quepa: si en una pantalla taparía los iconos de las apps, pasa a icono solo en ella). En barras verticales los tres van como icono salvo que se elija `"full"` |
 | `AiProviders` | lista de proveedores | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "gemini" \| "deepseek" \| "kimi" \| "ollama" \| "ollama_cloud" \| "lmstudio" \| "custom", "name", "enabled", "budget" }`; los personalizados añaden `url`, `percentField`, `valueField`, `labelField`. Las claves van al Administrador de credenciales (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` o un `id` | Proveedor que se muestra en la barra |
 | `SpeedTestProvider` | `ookla` (predeterminado) / `cloudflare` / `librespeed` / `gci` | Proveedor del speed test de la ventana de red |
 | `IpShowAddress` | `true` / `false` | Mostrar la IP pública en el panel de red |
+| `AutoSearchBox` | `false` (predeterminado), `true` / `"hide"`, `"icon"` | Recoger el cuadro de búsqueda de Windows cuando los paneles no caben ni como iconos (ocultarlo o dejarlo en icono) y restaurarlo al liberarse espacio |
 | `NetHealth` | `true` (predeterminado) / `false` | Salud de la conexión: ping al router, al DNS y a Internet cada 2 s (menú *Salud de la conexión*) |
 | `SpectrumStyle` | `"wave"`, `"bars"`, `"led"`, `"mirror"`, `"line"` | Estilo del espectro de audio (panel y ventana) |
-| `MediaWidth` | `400`, `480`, `560` (predeterminado), `680`, `800` o cualquier valor de 320 a 1200 | Ancho del panel multimedia en píxeles lógicos (menú *Tamaño del panel multimedia*); se reduce solo si no hay espacio suficiente |
+| `MediaWidth` | `400`, `480`, `560` (predeterminado), `680`, `800` o cualquier valor de 320 a 1200 | Ancho del panel multimedia en píxeles lógicos (menú *Tamaño del panel multimedia*); se reduce solo si no hay espacio suficiente (sin espectro por debajo de 300 px, solo carátula y botones hasta 160 px) |
 | `Language` | `"auto"`, `"es"`, `"en"` | Idioma de la interfaz (por defecto, el de Windows: español o, si no, inglés) |
 | `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Fondo de las ventanas flotantes (`"dark"` = opaco, sigue el modo claro/oscuro) |
-| `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias |
+| `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias mientras no se conoce su tamaño real (se mide en cada pantalla) |
 | `MonitorIds` | (informativo) | Código → nombre de los monitores detectados |
 
 Otros archivos en la misma carpeta: `pos.json` (separación del panel de red), `ai_cache.json`

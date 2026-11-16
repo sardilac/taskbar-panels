@@ -25,6 +25,15 @@ Stop-ScheduledTask -TaskName 'TaskbarPanels' -ErrorAction SilentlyContinue
 Get-Process taskbar-panels -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process PresentMon* -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$InstallDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
+# si la app había recogido el cuadro de búsqueda de la barra (AutoSearchBox), se devuelve a su modo original
+$searchState = Join-Path $SettingsDir 'search.json'
+if (Test-Path $searchState) {
+    try {
+        $st = Get-Content $searchState -Raw | ConvertFrom-Json
+        Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' -Name SearchboxTaskbarMode -Value ([int]$st.Mode) -Type DWord
+    } catch { Write-Warning "Cuadro de búsqueda: $($_.Exception.Message)" }
+    Remove-Item $searchState -Force -ErrorAction SilentlyContinue
+}
 Unregister-ScheduledTask -TaskName 'TaskbarPanels' -Confirm:$false -ErrorAction SilentlyContinue
 
 if (Test-Path $InstallDir) {

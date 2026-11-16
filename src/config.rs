@@ -4,8 +4,10 @@
 //!   PanelDisplays        : { "MediaPanel": ["SDC420B"], ... }   (opcional, por panel)
 //!                          Paneles: NetworkPanel, UsagePanel, SystemPanel, MediaPanel, RadioPanel
 //!   Panels               : { "MediaPanel": false, ... }         (opcional, activar/desactivar)
-//!   SecondaryRightMargin : px lógicos reservados al reloj en barras secundarias
+//!   SecondaryRightMargin : px lógicos reservados al reloj en barras secundarias (respaldo: el
+//!                          tamaño real se mide en cada pantalla, ver host.rs)
 //!   MonitorIds           : código → nombre (informativo)
+//!   AutoSearchBox        : true | "hide" | "icon" → recoger el cuadro de búsqueda si falta espacio
 
 use crate::util::appdata_dir;
 use serde_json::{json, Map, Value};

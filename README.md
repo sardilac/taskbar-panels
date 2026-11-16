@@ -131,13 +131,14 @@ Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 - **Open Claude / Copilot usage** (official web pages)
 - **Panels**: enable or disable each panel
 - **Displays**: all, primary only or a selection of monitors
-- **Panel format**: system, AI, network and radio automatic (icon if they do not fit, e.g. with many open windows), panel or icon
+- **Panel format**: system, AI, network and radio automatic (icon if they do not fit, e.g. with many open windows), panel or icon. Every screen is laid out with its own width and scale: panels never cover the app icons and, if they do not fit on a screen as icons, they narrow and, as a last resort, the ones farthest from the clock are hidden there until there is room
 - **Spectrum style**: liquid wave, capsule bars, segmented LED, mirrored bars or neon line
 - **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, Gemini, DeepSeek, Kimi, Ollama local and Cloud, LM Studio, custom JSON URL), remove and **GitHub token for Copilot**
 - **Window background**: frosted glass, clear glass, Windows acrylic, mica or solid (all follow light/dark mode)
 - **Speed test provider**: Speedtest.net, Cloudflare, LibreSpeed or GCI
 - **Connection health**: turn the continuous router / DNS / Internet check on or off
 - **Idioma / Language**: automatic (Windows language), Spanish or English
+- **Hide the search box when space runs out**: when on some screen the panels do not fit even as icons between the apps and the clock, it hides the Windows search box and restores it on its own when there is room again (also on exit). The Windows setting is shared by all screens
 - **Reset position**, **Exit**
 
 Also: the media buttons work without stealing focus from the active window, the network, AI and
@@ -153,17 +154,18 @@ Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 | `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Displays where the panels are shown (EDID codes, see `MonitorIds`) |
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Per-panel selection: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Enable or disable panels |
-| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit). On vertical taskbars the three are icons unless set to `"full"` |
+| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit; `full` is honoured while it fits: if it would cover the app icons on a screen, it becomes an icon on that screen only). On vertical taskbars the three are icons unless set to `"full"` |
 | `AiProviders` | list of providers | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "gemini" \| "deepseek" \| "kimi" \| "ollama" \| "ollama_cloud" \| "lmstudio" \| "custom", "name", "enabled", "budget" }`; custom ones add `url`, `percentField`, `valueField`, `labelField`. Keys go to Windows Credential Manager (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` or an `id` | Provider shown on the taskbar |
 | `SpeedTestProvider` | `ookla` (default) / `cloudflare` / `librespeed` / `gci` | Speed-test provider of the network flyout |
 | `IpShowAddress` | `true` / `false` | Show the public IP on the network panel |
+| `AutoSearchBox` | `false` (default), `true` / `"hide"`, `"icon"` | Collapse the Windows search box when the panels do not fit even as icons (hide it or leave it as an icon) and restore it when space frees up |
 | `NetHealth` | `true` (default) / `false` | Connection health: pings the router, DNS and Internet every 2 s (*Connection health* menu) |
 | `SpectrumStyle` | `"wave"`, `"bars"`, `"led"`, `"mirror"`, `"line"` | Audio spectrum style (panel and flyout) |
-| `MediaWidth` | `400`, `480`, `560` (default), `680`, `800` or any value from 320 to 1200 | Media panel width in logical pixels (*Media panel size* menu); it shrinks automatically if there is not enough room |
+| `MediaWidth` | `400`, `480`, `560` (default), `680`, `800` or any value from 320 to 1200 | Media panel width in logical pixels (*Media panel size* menu); it shrinks automatically if there is not enough room (no spectrum below 300 px, cover and buttons only down to 160 px) |
 | `Language` | `"auto"`, `"es"`, `"en"` | Interface language (default: the Windows language; Spanish, otherwise English) |
 | `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Flyout background (`"dark"` = solid, follows light/dark mode) |
-| `SecondaryRightMargin` | number (logical px) | Space reserved for the clock on secondary taskbars |
+| `SecondaryRightMargin` | number (logical px) | Space reserved for the clock on secondary taskbars until its real size is known (it is measured on each screen) |
 | `MonitorIds` | (informational) | Code → name of the detected monitors |
 
 Other files in the same folder: `pos.json` (network panel offset), `ai_cache.json` (last usage,

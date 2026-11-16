@@ -15,6 +15,7 @@ mod media;
 mod net;
 mod radio;
 mod render;
+mod search;
 mod flags;
 mod gpu;
 mod speedtest;
@@ -158,9 +159,13 @@ fn chain_slot(k: Kind) -> Option<usize> {
 /// `min_left` es el límite izquierdo (p. ej. el espacio del multimedia): los que lo pasen se empujan
 /// a la derecha, también sin solaparse. Devuelve (tipo, x, ancho) en px físicos, de derecha a izquierda.
 fn chain_layout(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], min_left: i32) -> Vec<(Kind, i32, i32)> {
+    chain_layout_sep(b, items, offs, min_left, (14.0 * b.scale) as i32)
+}
+
+/// `chain_layout` con la separación entre paneles (px físicos) indicada
+fn chain_layout_sep(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], min_left: i32, sep: i32) -> Vec<(Kind, i32, i32)> {
     let mut v: Vec<(Kind, i32)> = items.to_vec();
     v.sort_by_key(|(k, _)| chain_slot(*k).map(|i| (offs[i], i)).unwrap_or((0, 0)));
-    let sep = (14.0 * b.scale) as i32;
     let mut edge = b.right + sep;
     let mut placed: Vec<(Kind, i32, i32)> = v
         .into_iter()
@@ -186,6 +191,68 @@ fn chain_layout(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], min_left: i
         ceil = c.1 - sep;
     }
     placed
+}
+
+/// Colocación definitiva de los paneles de la derecha en una barra: nunca encima de los iconos de apps
+/// (`zone`, px físicos, con su margen). Cada pantalla tiene su ancho y su escala, así que lo que cabe en
+/// una puede no caber en otra: los paneles que invadirían los iconos se empujan a su derecha; si no
+/// caben entre los iconos y la bandeja se junta la separación y, si aun así no caben, se ocultan los
+/// de más a la izquierda (no aparecen en el resultado). Los que están enteros a la izquierda de Inicio
+/// (iconos centrados) no se tocan. `media_left` es el espacio reservado al multimedia (ver
+/// `chain_layout`); devuelve también si ese espacio se pudo respetar.
+fn fit_chain(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], zone: (i32, i32), media_left: i32) -> (Vec<(Kind, i32, i32)>, bool) {
+    let icon = (compact_width(Kind::Ip) * b.scale) as i32;
+    fit_chain_icons(b, items, offs, zone, media_left, (icon, (MIN_ICON_W * b.scale) as i32))
+}
+
+/// Ancho mínimo (px lógicos) al que se estrecha un panel en modo icono antes de ocultarlo
+const MIN_ICON_W: f32 = 30.0;
+
+/// `fit_chain` indicando (ancho de un panel en modo icono, ancho mínimo al que puede estrecharse), en
+/// px físicos: antes de ocultar ninguno, los que están en modo icono se estrechan por igual.
+fn fit_chain_icons(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], zone: (i32, i32), media_left: i32, icon: (i32, i32)) -> (Vec<(Kind, i32, i32)>, bool) {
+    let mut media_ok = true;
+    let mut base = chain_layout(b, items, offs, media_left);
+    if base.iter().any(|c| c.1 < media_left) {
+        // no caben junto al multimedia: los paneles mantienen su sitio y el multimedia se oculta
+        media_ok = false;
+        base = chain_layout(b, items, offs, i32::MIN);
+    }
+    if !base.iter().any(|&(_, x, w)| x < zone.1 && x + w > zone.0) {
+        return (base, media_ok);
+    }
+    let left: Vec<(Kind, i32, i32)> = base.iter().copied().filter(|&(_, x, w)| x + w <= zone.0).collect();
+    // de derecha a izquierda (orden de `chain_layout`): el último es el más alejado de la bandeja
+    let mut right: Vec<(Kind, i32)> = base.iter().filter(|&&(_, x, w)| x + w > zone.0).map(|&(k, _, w)| (k, w)).collect();
+    let seps = [(14.0 * b.scale) as i32, (6.0 * b.scale) as i32];
+    while !right.is_empty() {
+        let mut tries: Vec<(i32, i32, bool)> = Vec::new();
+        if media_ok && media_left > zone.1 {
+            tries.extend(seps.iter().map(|&s| (media_left, s, true)));
+        }
+        tries.extend(seps.iter().map(|&s| (zone.1, s, false)));
+        for (min_left, sep, keeps_media) in tries {
+            let p = chain_layout_sep(b, &right, offs, min_left, sep);
+            if p.iter().all(|c| c.1 >= min_left) {
+                return ([left, p].concat(), media_ok && (keeps_media || media_left <= zone.1));
+            }
+        }
+        // Último recurso antes de ocultar uno: estrechar por igual los que están en modo icono
+        let n_icons = right.iter().filter(|i| i.1 == icon.0).count() as i32;
+        if n_icons > 0 {
+            let fixed: i32 = right.iter().filter(|i| i.1 != icon.0).map(|i| i.1).sum();
+            let w = (b.right - zone.1 - fixed - seps[1] * (right.len() as i32 - 1)) / n_icons;
+            if w >= icon.1 && w < icon.0 {
+                let narrow: Vec<(Kind, i32)> = right.iter().map(|&(k, x)| (k, if x == icon.0 { w } else { x })).collect();
+                let p = chain_layout_sep(b, &narrow, offs, zone.1, seps[1]);
+                if p.iter().all(|c| c.1 >= zone.1) {
+                    return ([left, p].concat(), media_ok && media_left <= zone.1);
+                }
+            }
+        }
+        right.pop();
+    }
+    (left, media_ok)
 }
 
 /// Paneles automáticos que pasan a modo icono: solo los que hace falta para despejar la zona de los
@@ -214,6 +281,17 @@ fn auto_compact(b: &Taskbar, items: &[(Kind, i32, i32, bool)], offs: &[i32; 4], 
             None => break,
         }
     }
+    compact
+}
+
+/// Paneles que van en modo icono en una barra: los automáticos que lo necesitan (`auto_compact` sobre
+/// `zone`) y, si aun así se taparían los iconos de apps (`icons`), también los fijados a «panel»: el
+/// formato fijo se respeta mientras quepa, pero nunca a costa de montarse sobre las apps.
+fn compact_set(b: &Taskbar, items: &[(Kind, i32, i32, bool)], offs: &[i32; 4], zone: (i32, i32), icons: (i32, i32)) -> Vec<Kind> {
+    let mut compact = auto_compact(b, items, offs, zone);
+    let forced: Vec<(Kind, i32, i32, bool)> =
+        items.iter().map(|&(k, full, icon, auto)| (k, if compact.contains(&k) { icon } else { full }, icon, !auto && full != icon)).collect();
+    compact.extend(auto_compact(b, &forced, offs, icons));
     compact
 }
 
@@ -343,6 +421,91 @@ mod tests {
     }
 
     #[test]
+    fn los_paneles_nunca_tapan_los_iconos_de_apps() {
+        // medidas reales del portátil (2560 px a 150 %): iconos hasta x=2142, reloj desde x=2401
+        let b = Taskbar { start_left: 418, tasks_right: 2142, ..bar(0, 2401, 1.5) };
+        let zone = (418 - 24, 2142 + 24);
+        let icons = [(Kind::Ip, 66), (Kind::Usage, 66), (Kind::System, 66), (Kind::Radio, 66)];
+        let offs = [8, 95, 49, 118];
+        let (p, _) = fit_chain(&b, &icons, &offs, zone, i32::MIN);
+        // no caben a su ancho normal: se juntan y se estrechan por igual, sin ocultar ninguno
+        assert_eq!(p.iter().map(|c| c.0).collect::<Vec<_>>(), vec![Kind::Ip, Kind::System, Kind::Usage, Kind::Radio]);
+        for &(k, x, w) in &p {
+            assert!(x >= zone.1 && x + w <= b.right, "{k:?} fuera del hueco: {x}..{}", x + w);
+            assert!(w < 66 && w >= 45, "{k:?} ancho {w}");
+        }
+        // con menos sitio aún (iconos hasta x=2200) ya no caben ni estrechos: se oculta el más alejado
+        let menos = Taskbar { tasks_right: 2200, ..b.clone() };
+        let (p, _) = fit_chain(&menos, &icons, &offs, (394, 2224), i32::MIN);
+        assert_eq!(p.iter().map(|c| c.0).collect::<Vec<_>>(), vec![Kind::Ip, Kind::System, Kind::Usage]);
+        assert!(p.iter().all(|&(_, x, w)| x >= 2224 && x + w <= 2401));
+        // barra a reventar: no queda sitio para ninguno
+        let lleno = Taskbar { tasks_right: 2360, ..b.clone() };
+        assert!(fit_chain(&lleno, &icons, &offs, (394, 2384), i32::MIN).0.is_empty());
+        // con sitio de sobra (pantalla de 3840 px) no cambia nada respecto a la colocación normal
+        let ancho = Taskbar { start_left: 1058, tasks_right: 2782, ..bar(0, 3477, 1.5) };
+        let (p, media) = fit_chain(&ancho, &icons, &offs, (1034, 2806), 640);
+        assert_eq!(p, chain_layout(&ancho, &icons, &offs, 640));
+        assert!(media);
+        // un panel arrastrado encima de los iconos se queda a su derecha; a la izquierda de Inicio, se respeta
+        let (p, _) = fit_chain(&ancho, &icons, &[8, 95, 49, 700], (1034, 2806), i32::MIN);
+        assert!(p.iter().all(|&(_, x, _)| x >= 2806) && p.len() == 4);
+        let (p, _) = fit_chain(&ancho, &icons, &[8, 95, 49, 2200], (1034, 2806), i32::MIN);
+        assert!(p.iter().any(|&(k, x, w)| k == Kind::Radio && x + w <= 1034) && p.len() == 4);
+        // iconos a la izquierda: antes de ocultar un panel se cede el espacio del multimedia
+        let izq = Taskbar { left_aligned: true, start_left: 0, tasks_right: 1900, ..bar(0, 2401, 1.5) };
+        let (p, media) = fit_chain(&izq, &icons, &offs, (i32::MIN, 1924), 1900 + 282);
+        assert_eq!(p.len(), 4);
+        assert!(!media && p.iter().all(|&(_, x, _)| x >= 1924));
+    }
+
+    #[test]
+    fn panel_fijo_pasa_a_icono_si_taparia_las_apps() {
+        // portátil: iconos de apps hasta x=2142, reloj desde x=2401 (150 %)
+        let b = Taskbar { start_left: 418, tasks_right: 2142, ..bar(0, 2401, 1.5) };
+        let zone = (394, 2166);
+        let offs = [8, 95, 49, 118];
+        // sistema e IA fijados a «panel», red y radio automáticos: no caben → todos a icono
+        let items = [(Kind::Ip, 144, 66, true), (Kind::Usage, 255, 66, false), (Kind::System, 225, 66, false), (Kind::Radio, 141, 66, true)];
+        let mut c = compact_set(&b, &items, &offs, zone, zone);
+        c.sort_by_key(|k| chain_slot(*k));
+        assert_eq!(c, vec![Kind::Ip, Kind::Usage, Kind::System, Kind::Radio]);
+        // pantalla ancha con sitio de sobra: los fijos siguen como panel
+        let ancho = Taskbar { start_left: 1058, tasks_right: 2000, ..bar(0, 3477, 1.5) };
+        assert!(compact_set(&ancho, &items, &offs, (1034, 2024), (1034, 2024)).is_empty());
+        // sitio justo: primero ceden los automáticos; un fijo solo se fuerza si sigue sin caber
+        let justo = Taskbar { start_left: 1058, tasks_right: 2782, ..bar(0, 3477, 1.5) };
+        let c = compact_set(&justo, &items, &offs, (1034, 2806), (1034, 2806));
+        assert!(c.contains(&Kind::Radio) && !c.contains(&Kind::System));
+    }
+
+    #[test]
+    fn hueco_entre_la_ventana_flotante_y_su_panel() {
+        let r = |left, top, right, bottom| RECT { left, top, right, bottom };
+        // barra abajo: ventana encima del panel, 15 px de hueco a lo ancho de la ventana
+        assert_eq!(popup_bridge(&r(100, 500, 700, 1000), &r(350, 1015, 416, 1087)), r(100, 1000, 700, 1015));
+        // barra arriba y barras verticales
+        assert_eq!(popup_bridge(&r(100, 87, 700, 500), &r(350, 0, 416, 72)), r(100, 72, 700, 87));
+        assert_eq!(popup_bridge(&r(87, 100, 500, 600), &r(0, 300, 72, 366)), r(72, 100, 87, 600));
+        assert_eq!(popup_bridge(&r(500, 100, 913, 600), &r(928, 300, 1000, 366)), r(913, 100, 928, 600));
+        // se solapan (ventana recortada al monitor): sin hueco
+        assert_eq!(popup_bridge(&r(100, 500, 700, 1050), &r(350, 1015, 416, 1087)), RECT::default());
+    }
+
+    #[test]
+    fn multimedia_se_adapta_al_ancho() {
+        let l = media_layout(560.0, 48.0, 1.0);
+        assert!(l.viz_w > 0.0 && l.text_w > 0.0 && l.viz_x + l.viz_w <= 560.0);
+        // 250 px lógicos (portátil con muchas apps): sin espectro, con título
+        let l = media_layout(250.0, 48.0, 1.0);
+        assert!(l.viz_w == 0.0 && l.text_w >= 44.0 && l.text_x + l.text_w <= 250.0);
+        // ancho mínimo: solo carátula y botones, todos dentro del panel
+        let l = media_layout(MEDIA_MIN_W, 48.0, 1.0);
+        assert!(l.viz_w == 0.0 && l.text_w == 0.0);
+        assert!(l.btn[2].0 + l.btn[2].2 <= MEDIA_MIN_W);
+    }
+
+    #[test]
     fn paneles_dentro_de_la_barra_y_sin_solapes() {
         for (left, right, scale) in [(0, 1920, 1.0), (1920, 3840, 1.5), (-1280, 0, 1.25), (0, 1366, 2.0)] {
             let b = bar(left, right, scale);
@@ -401,6 +564,12 @@ struct App {
     bar_light: std::collections::HashMap<isize, bool>,
     /// barra del panel cuya ventana flotante está abierta y modo con el que se aplicó su estilo
     popup_tb: isize,
+    /// cuadro de búsqueda automático: (acción pendiente: true = recoger, desde cuándo se cumple)
+    search_pending: Option<(bool, Instant)>,
+    /// último cambio del cuadro de búsqueda hecho por la app
+    search_changed: Option<Instant>,
+    /// rectángulo (pantalla) del panel sobre el que se abrió la ventana flotante
+    popup_anchor: RECT,
     popup_light: Option<bool>,
 }
 
@@ -2837,8 +3006,28 @@ thread_local! {
     static POPUP_LEFT: RefCell<Option<Instant>> = const { RefCell::new(None) };
 }
 
+/// Margen (ms) con el cursor fuera del panel y de la ventana flotante antes de cerrarla
+const POPUP_GRACE_MS: u128 = 350;
+
+/// Hueco entre la ventana flotante y su panel: la franja que los separa, a lo ancho (o alto) de la
+/// ventana. Vacío si se tocan o se solapan.
+fn popup_bridge(popup: &RECT, panel: &RECT) -> RECT {
+    if popup.bottom <= panel.top {
+        RECT { left: popup.left, right: popup.right, top: popup.bottom, bottom: panel.top }
+    } else if popup.top >= panel.bottom {
+        RECT { left: popup.left, right: popup.right, top: panel.bottom, bottom: popup.top }
+    } else if popup.right <= panel.left {
+        RECT { left: popup.right, right: panel.left, top: popup.top, bottom: popup.bottom }
+    } else if popup.left >= panel.right {
+        RECT { left: panel.right, right: popup.left, top: popup.top, bottom: popup.bottom }
+    } else {
+        RECT::default()
+    }
+}
+
 /// Ventana flotante: aparece si el cursor lleva 300 ms sobre un panel; sigue abierta mientras el
-/// cursor esté sobre el panel o sobre la propia ventana; cambia al instante entre paneles.
+/// cursor esté sobre el panel, sobre la propia ventana o en el hueco entre ambos, y un instante
+/// más al salir (`POPUP_GRACE_MS`); cambia al instante entre paneles.
 unsafe fn update_popup() {
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
@@ -2857,10 +3046,11 @@ unsafe fn update_popup() {
                 over = Some((r, p.scale, p.tb_key, p.kind));
             }
         }
+        // sobre la ventana o en el hueco que la separa de su panel (el cursor lo cruza al subir a ella)
         let on_popup = app.popup_shown && {
             let mut r = RECT::default();
             let _ = GetWindowRect(app.popup, &mut r);
-            inside(&r)
+            inside(&r) || inside(&popup_bridge(&r, &app.popup_anchor))
         };
         if over.is_some() || on_popup {
             POPUP_LEFT.with(|l| *l.borrow_mut() = None);
@@ -2876,6 +3066,7 @@ unsafe fn update_popup() {
                     }
                     let style = popup_style(&app.cfg);
                     app.popup_tb = tb_key;
+                    app.popup_anchor = r;
                     let light = app.light_of(tb_key);
                     render::set_light(light);
                     if style != app.popup_style || app.popup_light != Some(light) {
@@ -2913,8 +3104,9 @@ unsafe fn update_popup() {
             None if on_popup => {} // el cursor pasó del panel a la ventana: se mantiene
             None => {
                 app.hover_since = None;
-                // la ventana de radio se maneja con el ratón: al cruzar el hueco entre el panel y la
-                // ventana no se cierra al instante (0,4 s de margen)
+                // ninguna ventana se cierra al instante: 0,35 s de margen cubren los cruces rápidos por
+                // fuera del hueco y los instantes en que el panel se recoloca o se oculta bajo el cursor
+                // (cambia la zona de iconos de la barra, la sesión multimedia parpadea entre pistas...)
                 let left = POPUP_LEFT.with(|l| *l.borrow_mut().get_or_insert_with(Instant::now));
                 // y mientras se escribe en su buscador sigue abierta aunque el cursor se salga. El foco se
                 // comprueba de verdad (si la activación falló o se perdió sin WM_KILLFOCUS, la marca
@@ -2923,7 +3115,7 @@ unsafe fn update_popup() {
                 RADIO_FOCUS.with(|f| f.set(focus));
                 let recent = |t: Instant| t.elapsed().as_secs() < RADIO_FOCUS_HOLD;
                 let typing = focus && (recent(left) || RADIO_USED.with(|u| u.get()).is_some_and(recent));
-                let grace = app.popup_kind == Some(Kind::Radio) && (left.elapsed().as_millis() < 400 || typing);
+                let grace = left.elapsed().as_millis() < POPUP_GRACE_MS || (app.popup_kind == Some(Kind::Radio) && typing);
                 if app.popup_shown && !grace {
                     dbg("OCULTAR");
                     if app.popup_kind == Some(Kind::Radio) && !radio::radio().query.is_empty() {
@@ -2995,7 +3187,7 @@ fn neon_at(t: f32) -> Rgb {
 ///  · iconos a la izquierda → justo a la derecha del último icono, sin invadir los paneles de la derecha
 /// None si el espacio libre es demasiado estrecho.
 /// ancho mínimo del multimedia en barra horizontal (px lógicos); con menos espacio se oculta
-const MEDIA_MIN_W: f32 = 320.0;
+const MEDIA_MIN_W: f32 = 160.0; // carátula + botones (ver `media_layout`)
 
 fn media_place(tb: &Taskbar, right_limit: i32) -> Option<(i32, i32)> {
     let sc = tb.scale;
@@ -3266,8 +3458,11 @@ fn media_layout(w: f32, h: f32, sc: f32) -> MediaLayout {
     let play = prev + sr + 6.0 * sc + pr;
     let next = play + pr + 6.0 * sc + sr;
     let text_x = next + sr + 12.0 * sc;
-    let viz_w = (190.0 * sc).min(w * 0.26);
-    let text_w = (w - text_x - viz_w - 14.0 * sc).max(40.0 * sc);
+    // Pantallas pequeñas o barras llenas: por debajo de 300 px lógicos se quita el espectro y, si
+    // tampoco cabe el título, quedan solo la carátula y los botones (ancho mínimo, `MEDIA_MIN_W`)
+    let viz_w = if w >= 300.0 * sc { (190.0 * sc).min(w * 0.26) } else { 0.0 };
+    let text_w = if viz_w > 0.0 { (w - text_x - viz_w - 14.0 * sc).max(40.0 * sc) } else { w - text_x - 10.0 * sc };
+    let text_w = if text_w >= 44.0 * sc { text_w } else { 0.0 };
     MediaLayout {
         art_x,
         art_y,
@@ -3352,7 +3547,9 @@ fn paint_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, p: &m
     let tpx = (12.7 * sc).min((h * 0.27).floor());
     let tw = c.text_width(&s.title, tpx, 600, "Segoe UI");
     let title_col = Rgb::u8(245, 245, 248);
-    if tw <= l.text_w {
+    if l.text_w <= 0.0 {
+        // sin sitio para el texto (solo carátula y botones)
+    } else if tw <= l.text_w {
         c.text(&s.title, l.text_x, ty, l.text_w, th, tpx, 600, "Segoe UI", title_col, DT_LEFT);
     } else {
         let (speed, gap, wait) = (28.0 * sc, 48.0 * sc, 2.5);
@@ -3364,9 +3561,11 @@ fn paint_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, p: &m
         c.text_clip(&s.title, l.text_x - off + tw + gap, ty, th, tpx, 600, "Segoe UI", title_col, c0, c1, fade);
     }
     let apx = (11.0 * sc).min((h * 0.23).floor());
-    c.text(&s.artist, l.text_x, h * 0.44, l.text_w, h * 0.30, apx, 400, "Segoe UI", Rgb::u8(165, 170, 185), DT_LEFT | DT_END_ELLIPSIS);
+    if l.text_w > 0.0 {
+        c.text(&s.artist, l.text_x, h * 0.44, l.text_w, h * 0.30, apx, 400, "Segoe UI", Rgb::u8(165, 170, 185), DT_LEFT | DT_END_ELLIPSIS);
+    }
     let tl = *media::TIMELINE.lock().unwrap();
-    if tl.dur > 1.0 {
+    if tl.dur > 1.0 && l.text_w > 0.0 {
         let pos = tl.pos + if s.playing { tl.at.map(|a| a.elapsed().as_secs_f64()).unwrap_or(0.0) } else { 0.0 };
         let frac = (pos / tl.dur).clamp(0.0, 1.0) as f32;
         let (py, ph) = (h * 0.85, (2.5 * sc).max(2.0));
@@ -3391,7 +3590,9 @@ fn paint_media(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State, p: &m
     let pulse = (p.disp.iter().take(6).sum::<f32>() / 6.0).clamp(0.0, 1.0);
     let phase = (t / 14.0).rem_euclid(1.0);
     let (disp, caps) = (p.disp.clone(), p.caps.clone());
-    spectrum(c, style, l.viz_x, h * 0.06, l.viz_w, h * 0.88, sc, &disp, &caps, phase, pulse);
+    if l.viz_w > 0.0 {
+        spectrum(c, style, l.viz_x, h * 0.06, l.viz_w, h * 0.88, sc, &disp, &caps, phase, pulse);
+    }
 }
 
 // ======================================================================= barras verticales (izquierda/derecha)
@@ -3844,6 +4045,7 @@ unsafe fn sync(app: &mut App) {
         app.last_playing = Some(Instant::now());
     }
     let media_active = app.last_playing.map(|t| t.elapsed().as_secs_f32() < 3.0).unwrap_or(false);
+    let mut rooms: Vec<search::Room> = Vec::new();
     for b in &bars {
         // La condición de ocultar debe mantenerse ~0,8 s: evita parpadeos por ventanas pasajeras
         let reason = host::hide_reason(b);
@@ -3885,7 +4087,9 @@ unsafe fn sync(app: &mut App) {
         // Inicio también hay sitio libre y un panel arrastrado hasta allí conserva su formato
         let zone_l = if b.left_aligned { i32::MIN } else { b.start_left - px(16.0) };
         let zone = (zone_l, (b.tasks_right as f32 + 16.0 * b.scale + media_need) as i32);
-        let compact = auto_compact(b, &full, &app.offs, zone);
+        // Zona que nunca se tapa: los iconos de apps (sin la reserva del multimedia)
+        let icons = (zone_l, b.tasks_right + px(16.0));
+        let compact = compact_set(b, &full, &app.offs, zone, icons);
         // Espacio del multimedia: los paneles de la derecha no pueden arrastrarse encima de él.
         // Iconos centrados → ocupa el lado izquierdo de la barra; iconos a la izquierda → va tras los
         // iconos y se le reserva al menos su ancho mínimo (si no cabe, se oculta como antes)
@@ -3905,8 +4109,8 @@ unsafe fn sync(app: &mut App) {
             let was = p.compact;
             p.compact = match mode(k) {
                 "icon" => true,
-                "auto" => compact.contains(&k),
-                _ => false,
+                // "auto", o "full" forzado a icono porque taparía los iconos de apps
+                _ => compact.contains(&k),
             };
             if was != p.compact {
                 dbg(&format!(
@@ -3916,10 +4120,10 @@ unsafe fn sync(app: &mut App) {
             }
             chain.push((k, ((if p.compact { compact_width(k) } else { k.width() }) * b.scale) as i32));
         }
-        let mut placed = chain_layout(b, &chain, &app.offs, media_left);
-        if placed.iter().any(|c| c.1 < media_left) {
-            // no caben junto al multimedia: los paneles mantienen su sitio y el multimedia se oculta
-            placed = chain_layout(b, &chain, &app.offs, i32::MIN);
+        let (placed, _) = fit_chain(b, &chain, &app.offs, icons, media_left);
+        if !hide && b.measured && !chain.is_empty() {
+            let n = chain.len() as i32;
+            rooms.push(search::Room { need: n * px(compact_width(Kind::Ip)) + (n - 1) * px(14.0), avail: b.right - icons.1, scale: b.scale, left_aligned: b.left_aligned });
         }
         let chain_left = placed.iter().map(|c| c.1).min().unwrap_or(b.right);
         for k in KINDS {
@@ -3944,12 +4148,88 @@ unsafe fn sync(app: &mut App) {
                     }
                 }
             } else {
-                let Some(&(_, x, w)) = placed.iter().find(|c| c.0 == k) else { continue };
+                let Some(&(_, x, w)) = placed.iter().find(|c| c.0 == k) else {
+                    let _ = ShowWindow(p.hwnd, SW_HIDE); // no cabe entre los iconos de apps y la bandeja
+                    continue;
+                };
                 (x, w)
             };
             place_panel(p, x, b.top, w, b.height);
         }
     }
+    auto_search(app, &rooms);
+}
+
+/// Modo al que se recoge el cuadro de búsqueda según `AutoSearchBox` (None = función desactivada):
+/// `true` o "hide" lo ocultan, "icon" lo deja en icono
+fn auto_search_target(cfg: &Config) -> Option<u32> {
+    match &cfg.v["AutoSearchBox"] {
+        serde_json::Value::Bool(true) => Some(search::HIDDEN),
+        serde_json::Value::String(s) if s == "hide" => Some(search::HIDDEN),
+        serde_json::Value::String(s) if s == "icon" => Some(search::ICON),
+        _ => None,
+    }
+}
+
+/// Cuadro de búsqueda automático: si en alguna barra los paneles no caben ni como iconos, se recoge;
+/// cuando vuelve a caber en todas (con holgura), se restaura. La condición debe mantenerse 2 s y
+/// entre dos cambios pasan al menos 8 s (Explorer reorganiza la barra y las medidas tardan en llegar).
+fn auto_search(app: &mut App, rooms: &[search::Room]) {
+    let target = auto_search_target(&app.cfg);
+    let saved = search::saved();
+    let Some(target) = target else {
+        if saved.is_some() {
+            search::restore(); // se desactivó la función con el cuadro recogido
+            app.search_changed = Some(Instant::now());
+        }
+        app.search_pending = None;
+        return;
+    };
+    if app.drag.is_some() || rooms.is_empty() || app.search_changed.is_some_and(|t| t.elapsed().as_secs() < 8) {
+        app.search_pending = None;
+        return;
+    }
+    let current = search::mode();
+    let want = match saved {
+        // el usuario cambió el modo a mano mientras estaba recogido: manda su elección
+        Some(s) if current != Some(s.to) => {
+            search::clear();
+            None
+        }
+        Some(s) => {
+            let now_w = if s.to == search::ICON { search::ICON_W } else { 0.0 };
+            search::fits_again(rooms, s.width - now_w).then_some(false)
+        }
+        None => (current.is_some_and(search::is_box) && search::lacks_room(rooms)).then_some(true),
+    };
+    let Some(collapse) = want else {
+        app.search_pending = None;
+        return;
+    };
+    let since = match app.search_pending {
+        Some((c, t)) if c == collapse => t,
+        _ => Instant::now(),
+    };
+    app.search_pending = Some((collapse, since));
+    if since.elapsed().as_secs() < 2 {
+        return;
+    }
+    if collapse {
+        let mode = current.unwrap_or(2);
+        // ancho real del cuadro (px lógicos) en cualquier barra medida
+        let width = app.bars.iter().filter(|b| b.search_w > 0).map(|b| b.search_w as f32 / b.scale).fold(0.0, f32::max);
+        let width = if width > search::ICON_W { width } else if mode == 2 { 220.0 } else { 110.0 };
+        search::save(&search::Saved { mode, to: target, width });
+        if !search::set_mode(target) {
+            search::clear();
+        }
+        dbg(&format!("cuadro de búsqueda: RECOGER (modo {mode} → {target}, {width:.0} px) {rooms:?}"));
+    } else {
+        search::restore();
+        dbg(&format!("cuadro de búsqueda: RESTAURAR {rooms:?}"));
+    }
+    app.search_pending = None;
+    app.search_changed = Some(Instant::now());
 }
 
 // ======================================================================= red
@@ -4048,6 +4328,7 @@ const ID_REFRESH_USAGE: usize = 3;
 const ID_OPEN_CLAUDE: usize = 4;
 const ID_OPEN_COPILOT: usize = 5;
 const ID_RESET_POS: usize = 6;
+const ID_AUTO_SEARCH: usize = 7;
 const ID_PANEL_BASE: usize = 10; // +índice de KINDS
 const ID_SCREENS_ALL: usize = 20;
 const ID_SCREENS_PRIMARY: usize = 21;
@@ -4244,6 +4525,8 @@ unsafe fn show_menu(main: HWND) {
         append(sub, ID_LANG_EN, "English", lang == "en");
         append_sub(menu, sub, tr("Idioma", "Language"));
     }
+    let auto_sb = with_app(|a| auto_search_target(&a.cfg).is_some()).unwrap_or(false);
+    append(menu, ID_AUTO_SEARCH, tr("Ocultar el cuadro de búsqueda si falta espacio", "Hide the search box when space runs out"), auto_sb);
     append(menu, ID_RESET_POS, tr("Reiniciar posición", "Reset position"), false);
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     append(menu, ID_EXIT, tr("Salir", "Exit"), false);
@@ -4337,6 +4620,11 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
                 };
                 app.cfg.v["Language"] = serde_json::json!(v);
                 i18n::init(Some(v));
+                save = true;
+            }
+            ID_AUTO_SEARCH => {
+                let on = auto_search_target(&app.cfg).is_some();
+                app.cfg.v["AutoSearchBox"] = serde_json::json!(!on);
                 save = true;
             }
             ID_SHOW_IP => {
@@ -4772,6 +5060,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let d = tray_data(hwnd);
                 let _ = Shell_NotifyIconW(NIM_DELETE, &d);
                 sys::stop_presentmon();
+                search::restore(); // al salir, el cuadro de búsqueda vuelve a como lo tenía el usuario
                 PostQuitMessage(0);
             }
             return LRESULT(0);
@@ -5222,6 +5511,9 @@ fn main() {
                 popup_style: String::new(),
                 bar_light: std::collections::HashMap::new(),
                 popup_tb: 0,
+                search_pending: None,
+                search_changed: None,
+                popup_anchor: RECT::default(),
                 popup_light: None,
             })
         });

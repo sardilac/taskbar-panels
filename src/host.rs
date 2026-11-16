@@ -41,6 +41,10 @@ pub struct Taskbar {
     pub tasks_bottom: i32,
     /// vertical: borde superior del primer icono (Inicio incluido)
     pub tasks_top: i32,
+    /// ancho del cuadro/botón de búsqueda de la barra (0 = oculto)
+    pub search_w: i32,
+    /// la geometría viene de UI Automation (medidas reales, no el cálculo de respaldo)
+    pub measured: bool,
 }
 
 fn class_of(h: HWND) -> String {
@@ -111,6 +115,10 @@ pub fn monitor_id(h: HWND) -> String {
 struct IconInfo {
     icons: RECT,
     tray_top: Option<i32>,
+    /// barra horizontal: borde izquierdo real de la bandeja/reloj (cambia con la escala de cada pantalla)
+    tray_left: Option<i32>,
+    /// ancho del botón/cuadro de búsqueda (0 si está oculto)
+    search_w: i32,
 }
 
 static ICONS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<isize, IconInfo>>> =
@@ -124,12 +132,20 @@ unsafe fn uia_extent(uia: &windows::Win32::UI::Accessibility::IUIAutomation, hw:
     let all = el.FindAll(TreeScope_Descendants, &uia.CreateTrueCondition().ok()?).ok()?;
     let mut icons: Option<RECT> = None;
     let mut tray_top: Option<i32> = None;
+    let mut tray_left: Option<i32> = None;
+    let mut search_w = 0;
     for i in 0..all.Length().ok()? {
         let Ok(e) = all.GetElement(i) else { continue };
         let cls = e.CurrentClassName().map(|b| b.to_string()).unwrap_or_default();
-        let is_icon = cls == "Taskbar.TaskListButtonAutomationPeer"
-            || e.CurrentAutomationId().map(|b| b.to_string() == "StartButton").unwrap_or(false);
-        let is_tray = vertical && cls.starts_with("SystemTray.");
+        let id = if cls == "ToggleButton" { e.CurrentAutomationId().map(|b| b.to_string()).unwrap_or_default() } else { String::new() };
+        if id == "SearchButton" {
+            if let Ok(r) = e.CurrentBoundingRectangle() {
+                search_w = (r.right - r.left).max(0);
+            }
+            continue;
+        }
+        let is_icon = cls == "Taskbar.TaskListButtonAutomationPeer" || id == "StartButton";
+        let is_tray = cls.starts_with("SystemTray.");
         if !is_icon && !is_tray {
             continue;
         }
@@ -142,11 +158,13 @@ unsafe fn uia_extent(uia: &windows::Win32::UI::Accessibility::IUIAutomation, hw:
                 None => r,
                 Some(x) => RECT { left: x.left.min(r.left), top: x.top.min(r.top), right: x.right.max(r.right), bottom: x.bottom.max(r.bottom) },
             });
-        } else {
+        } else if vertical {
             tray_top = Some(tray_top.map_or(r.top, |t| t.min(r.top)));
+        } else {
+            tray_left = Some(tray_left.map_or(r.left, |t| t.min(r.left)));
         }
     }
-    icons.map(|icons| IconInfo { icons, tray_top })
+    icons.map(|icons| IconInfo { icons, tray_top, tray_left, search_w })
 }
 
 pub fn spawn_icons_watcher() {
@@ -223,12 +241,18 @@ pub fn taskbars(secondary_margin: f32) -> Vec<Taskbar> {
         }
         let dpi = unsafe { GetDpiForWindow(hw) };
         let scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
+        let ui = ICONS.lock().unwrap().get(&(hw.0 as isize)).copied();
+        // Borde izquierdo real de la bandeja/reloj de ESTA barra (UI Automation): su ancho depende de la
+        // escala y del contenido de cada pantalla. Solo se acepta en la mitad derecha de la barra.
+        let tray_left = ui.and_then(|u| u.tray_left).filter(|&x| x > (r.left + r.right) / 2 && x <= r.right);
         let right = if primary {
             let c = wide("TrayNotifyWnd");
             let tray = unsafe { FindWindowExW(hw, HWND::default(), PCWSTR(c.as_ptr()), PCWSTR::null()).unwrap_or_default() };
-            if tray.is_invalid() { r.right } else { rect_of(tray).left }
+            let legacy = if tray.is_invalid() { r.right } else { rect_of(tray).left };
+            tray_left.map_or(legacy, |x| x.min(legacy))
         } else {
-            r.right - (secondary_margin * scale) as i32
+            // sin dato real (primer segundo tras arrancar), el margen configurado
+            tray_left.unwrap_or(r.right - (secondary_margin * scale) as i32)
         };
         let start = child_rect(hw, "Start").filter(|s| s.left >= r.left && s.right > s.left);
         // borde izquierdo real de los iconos (Inicio incluido): de UI Automation si está disponible
@@ -241,7 +265,6 @@ pub fn taskbars(secondary_margin: f32) -> Vec<Taskbar> {
         let left_aligned = (r.right - r.left) >= (r.bottom - r.top) && (start_left - r.left) as f32 <= 40.0 * scale;
         let vertical = (r.bottom - r.top) > (r.right - r.left);
         watch.push((hw.0 as isize, vertical));
-        let ui = ICONS.lock().unwrap().get(&(hw.0 as isize)).copied();
         let uia = ui.map(|u| u.icons);
         let tasks_right = uia.map(|e| e.right)
             .or_else(|| child_rect(hw, "MSTaskListWClass").filter(|t| t.right > t.left).map(|t| t.right))
@@ -299,6 +322,8 @@ pub fn taskbars(secondary_margin: f32) -> Vec<Taskbar> {
             tray_top,
             tasks_bottom,
             tasks_top,
+            search_w: ui.map_or(0, |u| u.search_w),
+            measured: ui.is_some() && tray_left.is_some(),
         });
     }
     *WATCH.lock().unwrap() = watch;

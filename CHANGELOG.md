@@ -2,6 +2,15 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.5.3
+
+- **Panels no longer cover the app icons**: every screen is laid out with its own width and scale. If even in icon mode they do not fit between the app icons (search box included) and the clock — typical on a laptop screen with many open windows — the panels are packed closer and their icons narrow evenly (down to 30 logical px) so all of them stay in view; only if they still do not fit are they hidden on that screen, starting with the one farthest from the clock, and they come back on their own when space frees up. Nothing changes on the other screens. A panel dragged on top of the icons stays to their right.
+- **Automatic search box** (optional; *Hide the search box when space runs out* menu or `AutoSearchBox` key): when on some screen the panels do not fit even as icons, the app hides the Windows search box (or leaves it as an icon with `"icon"`) and restores it on its own when it fits again with some slack, when the option is turned off, on exit and on uninstall. If you change the search mode by hand while it is collapsed, your choice is kept.
+- **Fixed "panel" format**: a panel set to *Panel* becomes an icon on the screen where it would cover the app icons (automatic ones give way first) and gets its format back when it fits again; screens with room are unaffected.
+- **Steadier pop-up windows**: they sometimes closed almost instantly. Only the radio one tolerated the cursor crossing the gap between the panel and the window; that gap now counts as part of the window for every panel and none closes until the cursor has been outside for 0.35 s (nor when the panel is briefly repositioned under the cursor).
+- **Media panel on small screens**: it used to disappear without 320 free logical px. It now adapts: below 300 px it drops the spectrum, then the title and artist, and down to 160 px it keeps the cover and the buttons.
+- **Secondary taskbars**: the clock area is measured on each screen (it changes with its scale) instead of reserving a fixed margin; `SecondaryRightMargin` remains as a fallback until the real size is known.
+
 ## v1.5.2
 
 - **CPU usage matches Task Manager**: on Windows 11 24H2 and later the system panel now reads the standard *% Processor Time*, as Task Manager does. It used to read *% Processor Utility*, which is weighted by clock speed and with turbo boost showed about twice as much (for example 43 % against 21 %). Earlier Windows versions keep *% Processor Utility*, which is what their Task Manager shows.

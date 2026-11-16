@@ -2,6 +2,15 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.5.3
+
+- **Los paneles ya no tapan los iconos de las apps**: cada pantalla se calcula con su propio ancho y escala. Si ni en modo icono caben entre los iconos de las apps (con el cuadro de búsqueda incluido) y el reloj —lo habitual en la pantalla de un portátil con muchas ventanas abiertas—, los paneles se juntan y sus iconos se estrechan por igual (hasta 30 px lógicos) para que sigan todos a la vista; solo si ni así caben se ocultan en esa pantalla, empezando por el más alejado del reloj, y vuelven solos al liberarse espacio. En las demás pantallas no cambia nada. Un panel arrastrado encima de los iconos queda a su derecha.
+- **Cuadro de búsqueda automático** (opcional; menú *Ocultar el cuadro de búsqueda si falta espacio* o clave `AutoSearchBox`): cuando en alguna pantalla los paneles no caben ni como iconos, la app oculta el cuadro de búsqueda de Windows (o lo deja en icono con `"icon"`) y lo restaura sola cuando vuelve a caber con holgura, al desactivar la opción, al salir y al desinstalar. Si cambias el modo de búsqueda a mano mientras está recogido, se respeta tu elección.
+- **Formato «panel» fijo**: un panel fijado a *Panel* pasa a icono en la pantalla donde taparía los iconos de las apps (primero ceden los automáticos) y recupera su formato cuando vuelve a caber; en las pantallas con sitio no cambia.
+- **Ventanas flotantes más estables**: a veces se cerraban casi al instante. Solo la de radio toleraba que el cursor cruzara el hueco entre el panel y la ventana; ahora ese hueco cuenta como parte de la ventana en todos los paneles y ninguna se cierra hasta que el cursor lleva 0,35 s fuera (tampoco si el panel se recoloca un instante bajo el cursor).
+- **Multimedia en pantallas pequeñas**: antes desaparecía si no había 320 px lógicos libres. Ahora se adapta: por debajo de 300 px quita el espectro, después el título y el artista, y hasta 160 px conserva la carátula y los botones.
+- **Barras secundarias**: el espacio del reloj se mide en cada pantalla (cambia con su escala) en vez de reservar un margen fijo; `SecondaryRightMargin` queda como respaldo mientras no se conoce la medida real.
+
 ## v1.5.2
 
 - **El uso de CPU coincide con el Administrador de tareas**: en Windows 11 24H2 y posteriores el panel de sistema lee ahora el *% de tiempo de procesador* estándar, igual que el Administrador de tareas. Antes leía *% Processor Utility*, que pondera por la frecuencia y con turbo mostraba cerca del doble (por ejemplo 43 % frente a 21 %). Las versiones anteriores de Windows conservan *% Processor Utility*, que es lo que muestra su Administrador de tareas.
