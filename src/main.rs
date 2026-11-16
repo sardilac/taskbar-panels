@@ -188,6 +188,35 @@ fn chain_layout(b: &Taskbar, items: &[(Kind, i32)], offs: &[i32; 4], min_left: i
     placed
 }
 
+/// Paneles automáticos que pasan a modo icono: solo los que hace falta para despejar la zona de los
+/// iconos de apps (`zone`, px físicos). Se prueba de izquierda a derecha y un panel solo se condensa
+/// si con ello se reduce la invasión (la suya o la del vecino al que empuja): mover uno hasta los
+/// iconos no cambia el formato de los demás. `items` = (tipo, ancho actual, ancho en icono, automático).
+fn auto_compact(b: &Taskbar, items: &[(Kind, i32, i32, bool)], offs: &[i32; 4], zone: (i32, i32)) -> Vec<Kind> {
+    let layout = |compact: &[Kind]| {
+        let it: Vec<(Kind, i32)> = items.iter().map(|&(k, full, icon, _)| (k, if compact.contains(&k) { icon } else { full })).collect();
+        chain_layout(b, &it, offs, i32::MIN)
+    };
+    let invaded = |p: &[(Kind, i32, i32)]| -> i64 { p.iter().map(|&(_, x, w)| ((x + w).min(zone.1) as i64 - x.max(zone.0) as i64).max(0)).sum() };
+    let mut compact: Vec<Kind> = Vec::new();
+    loop {
+        let placed = layout(&compact);
+        let cur = invaded(&placed);
+        if cur == 0 {
+            break;
+        }
+        let next = placed.iter().rev().map(|c| c.0).find(|k| {
+            let auto = items.iter().any(|i| i.0 == *k && i.3);
+            auto && !compact.contains(k) && invaded(&layout(&[compact.as_slice(), &[*k]].concat())) < cur
+        });
+        match next {
+            Some(k) => compact.push(k),
+            None => break,
+        }
+    }
+    compact
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +320,26 @@ mod tests {
         for w in s.windows(2) {
             assert!(w[0].1 + w[0].2 + sep <= w[1].1, "solape {:?} / {:?} (offs={offs:?})", w[0], w[1]);
         }
+    }
+
+    #[test]
+    fn modo_icono_solo_para_el_panel_que_invade_los_iconos() {
+        // barra 0..1920 con iconos centrados entre x=700 y x=1200 (zona con margen: 684..1216)
+        let b = Taskbar { start_left: 700, tasks_right: 1200, ..bar(0, 1920, 1.0) };
+        let zone = (684, 1216);
+        let items = [(Kind::Ip, 112, 48, true), (Kind::Usage, 150, 48, true), (Kind::System, 236, 48, true), (Kind::Radio, 94, 48, true)];
+        // todos a la derecha con sitio de sobra: ninguno cambia
+        assert!(auto_compact(&b, &items, &[8, 140, 310, 560], zone).is_empty());
+        // la radio arrastrada hasta los iconos: solo ella pasa a icono
+        assert_eq!(auto_compact(&b, &items, &[8, 140, 310, 730], zone), vec![Kind::Radio]);
+        // la radio a la izquierda de Inicio (sitio libre): nadie cambia
+        assert!(auto_compact(&b, &items, &[8, 140, 310, 1500], zone).is_empty());
+        // barra llena (iconos hasta x=1500): se condensan de izquierda a derecha solo los necesarios
+        let full = Taskbar { start_left: 300, tasks_right: 1500, ..bar(0, 1920, 1.0) };
+        assert_eq!(auto_compact(&full, &items, &[8, 140, 310, 560], (284, 1516)), vec![Kind::Radio, Kind::System]);
+        // un panel fijo (no automático) que invade no arrastra a los demás
+        let fixed = [(Kind::Ip, 112, 48, true), (Kind::Radio, 94, 48, false)];
+        assert!(auto_compact(&b, &fixed, &[8, 140, 310, 730], zone).is_empty());
     }
 
     #[test]
@@ -1727,7 +1776,12 @@ thread_local! {
     static RADIO_SCROLL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// el cuadro de búsqueda tiene el teclado (la ventana se activó al pulsarlo)
     static RADIO_FOCUS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// última tecla o clic en la ventana de radio (el foco solo la mantiene abierta mientras se usa)
+    static RADIO_USED: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
+
+/// Segundos que la ventana de radio sigue abierta con el cursor fuera mientras tiene el teclado
+const RADIO_FOCUS_HOLD: u64 = 6;
 
 fn radio_scroll(d: i32) {
     RADIO_SCROLL.with(|s| s.set((s.get() as i32 + d).max(0) as usize));
@@ -2862,8 +2916,14 @@ unsafe fn update_popup() {
                 // la ventana de radio se maneja con el ratón: al cruzar el hueco entre el panel y la
                 // ventana no se cierra al instante (0,4 s de margen)
                 let left = POPUP_LEFT.with(|l| *l.borrow_mut().get_or_insert_with(Instant::now));
-                // y mientras se escribe en su buscador sigue abierta aunque el cursor se salga
-                let grace = app.popup_kind == Some(Kind::Radio) && (left.elapsed().as_millis() < 400 || RADIO_FOCUS.with(|f| f.get()));
+                // y mientras se escribe en su buscador sigue abierta aunque el cursor se salga. El foco se
+                // comprueba de verdad (si la activación falló o se perdió sin WM_KILLFOCUS, la marca
+                // quedaba puesta y la ventana no se cerraba nunca) y caduca al dejar de usarla
+                let focus = RADIO_FOCUS.with(|f| f.get()) && GetForegroundWindow() == app.popup;
+                RADIO_FOCUS.with(|f| f.set(focus));
+                let recent = |t: Instant| t.elapsed().as_secs() < RADIO_FOCUS_HOLD;
+                let typing = focus && (recent(left) || RADIO_USED.with(|u| u.get()).is_some_and(recent));
+                let grace = app.popup_kind == Some(Kind::Radio) && (left.elapsed().as_millis() < 400 || typing);
                 if app.popup_shown && !grace {
                     dbg("OCULTAR");
                     if app.popup_kind == Some(Kind::Radio) && !radio::radio().query.is_empty() {
@@ -3811,17 +3871,21 @@ unsafe fn sync(app: &mut App) {
         let present = |k: Kind| app.panels.iter().any(|p| p.kind == k && p.tb_key == b.key);
         let modes: Vec<(Kind, &str)> = CHAIN.iter().map(|k| (*k, panel_mode(&app.cfg, *k))).collect();
         let mode = |k: Kind| modes.iter().find(|m| m.0 == k).map(|m| m.1).unwrap_or("full");
-        let full: Vec<(Kind, i32)> = CHAIN
+        let px = |w: f32| (w * b.scale) as i32;
+        let full: Vec<(Kind, i32, i32, bool)> = CHAIN
             .iter()
             .filter(|k| present(**k))
-            .map(|k| (*k, ((if mode(*k) == "icon" { compact_width(*k) } else { k.width() }) * b.scale) as i32))
+            .map(|k| (*k, px(if mode(*k) == "icon" { compact_width(*k) } else { k.width() }), px(compact_width(*k)), mode(*k) == "auto"))
             .collect();
-        let full_left = chain_layout(b, &full, &app.offs, i32::MIN).iter().map(|c| c.1).min().unwrap_or(b.right);
         // Con los iconos a la izquierda el multimedia va entre los iconos y estos paneles: en modo
         // automático se reserva su ancho completo (si no, en pantallas pequeñas quedaría comprimido o
         // no cabría y sistema/IA seguirían como panel completo)
         let media_need = if b.left_aligned && media_active && present(Kind::Media) { (Kind::Media.width() + 12.0) * b.scale } else { 0.0 };
-        let compact = (full_left as f32) < b.tasks_right as f32 + 16.0 * b.scale + media_need;
+        // Zona de los iconos de apps (con su margen): con los iconos centrados, a la izquierda de
+        // Inicio también hay sitio libre y un panel arrastrado hasta allí conserva su formato
+        let zone_l = if b.left_aligned { i32::MIN } else { b.start_left - px(16.0) };
+        let zone = (zone_l, (b.tasks_right as f32 + 16.0 * b.scale + media_need) as i32);
+        let compact = auto_compact(b, &full, &app.offs, zone);
         // Espacio del multimedia: los paneles de la derecha no pueden arrastrarse encima de él.
         // Iconos centrados → ocupa el lado izquierdo de la barra; iconos a la izquierda → va tras los
         // iconos y se le reserva al menos su ancho mínimo (si no cabe, se oculta como antes)
@@ -3841,13 +3905,13 @@ unsafe fn sync(app: &mut App) {
             let was = p.compact;
             p.compact = match mode(k) {
                 "icon" => true,
-                "auto" => compact,
+                "auto" => compact.contains(&k),
                 _ => false,
             };
             if was != p.compact {
                 dbg(&format!(
-                    "barra {}: {k:?} modo icono = {} (iconos hasta x={}, paneles desde x={full_left}, alineada izq={})",
-                    b.monitor_id, p.compact, b.tasks_right, b.left_aligned
+                    "barra {}: {k:?} modo icono = {} (zona de iconos x={}..{}, alineada izq={})",
+                    b.monitor_id, p.compact, zone.0, zone.1, b.left_aligned
                 ));
             }
             chain.push((k, ((if p.compact { compact_width(k) } else { k.width() }) * b.scale) as i32));
@@ -4644,6 +4708,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 _ => 0,
             };
             if msg == WM_LBUTTONUP && kind == Some(Kind::Radio) {
+                RADIO_USED.with(|u| u.set(Some(Instant::now())));
                 radio_click(hit);
                 if hit == ACT_RADIO_SEARCH {
                     // el teclado solo llega a la ventana activa: se activa al pulsar el buscador
@@ -4670,6 +4735,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_CHAR if with_app(|a| a.popup == hwnd && a.popup_kind == Some(Kind::Radio)).unwrap_or(false) => {
+            RADIO_USED.with(|u| u.set(Some(Instant::now())));
             radio_char(wp.0 as u32);
             let _ = InvalidateRect(hwnd, None, FALSE);
             return LRESULT(0);

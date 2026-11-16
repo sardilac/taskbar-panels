@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "taskbar-panels"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "rustfft",
  "serde",

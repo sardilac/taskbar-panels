@@ -2,6 +2,12 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.5.2
+
+- **CPU usage matches Task Manager**: on Windows 11 24H2 and later the system panel now reads the standard *% Processor Time*, as Task Manager does. It used to read *% Processor Utility*, which is weighted by clock speed and with turbo boost showed about twice as much (for example 43 % against 21 %). Earlier Windows versions keep *% Processor Utility*, which is what their Task Manager shows.
+- **Icon mode, panel by panel**: in automatic format only the panels that actually reach the app icons collapse to an icon. Dragging one panel (the radio, for instance) up to the icons used to collapse every other panel too, even with plenty of room. With centered icons, a panel dragged to the free space left of the Start button keeps its full format.
+- **Radio flyout**: fixed, it sometimes stayed open after the search box had been used. The keyboard focus is now checked for real and only keeps the flyout open while you are typing (6 s after the last key or click once the pointer has left).
+
 ## v1.5.1
 
 - **Narrower radio panel**: it now ends where the **ON AIR** sign ends (94 px instead of 176) and the station name sits below it as a **banner** that scrolls when it does not fit. While connecting, the sign shows `• • •`.

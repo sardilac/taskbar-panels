@@ -45,6 +45,20 @@ fn reg_cpu() -> (String, f32) {
     }
 }
 
+/// Número de compilación de Windows (0 si no se puede leer)
+fn win_build() -> u32 {
+    use windows::Win32::System::Registry::*;
+    unsafe {
+        let mut buf = [0u16; 16];
+        let mut sz = (buf.len() * 2) as u32;
+        let key = w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+        if RegGetValueW(HKEY_LOCAL_MACHINE, key, w!("CurrentBuildNumber"), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut sz)).is_err() {
+            return 0;
+        }
+        String::from_utf16_lossy(&buf[..(sz as usize / 2).saturating_sub(1)]).trim().parse().unwrap_or(0)
+    }
+}
+
 impl Cpu {
     fn new() -> Option<Self> {
         unsafe {
@@ -52,8 +66,14 @@ impl Cpu {
             if PdhOpenQueryW(PCWSTR::null(), 0, &mut q) != 0 {
                 return None;
             }
+            // Mismo dato que el Administrador de tareas: desde Windows 11 24H2 muestra el % de tiempo
+            // de procesador (estándar); antes, «% Processor Utility», que pondera por la frecuencia
+            // y con turbo da cifras mucho mayores (p. ej. 43 % frente a 21 %)
             let mut c = 0isize;
-            if PdhAddEnglishCounterW(q, w!("\\Processor Information(_Total)\\% Processor Utility"), 0, &mut c) != 0 {
+            let utility = w!("\\Processor Information(_Total)\\% Processor Utility");
+            let time = w!("\\Processor Information(_Total)\\% Processor Time");
+            let (first, second) = if win_build() >= 26100 { (time, utility) } else { (utility, time) };
+            if PdhAddEnglishCounterW(q, first, 0, &mut c) != 0 && PdhAddEnglishCounterW(q, second, 0, &mut c) != 0 {
                 return None;
             }
             let mut p = 0isize;

@@ -2,6 +2,12 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.5.2
+
+- **El uso de CPU coincide con el Administrador de tareas**: en Windows 11 24H2 y posteriores el panel de sistema lee ahora el *% de tiempo de procesador* estándar, igual que el Administrador de tareas. Antes leía *% Processor Utility*, que pondera por la frecuencia y con turbo mostraba cerca del doble (por ejemplo 43 % frente a 21 %). Las versiones anteriores de Windows conservan *% Processor Utility*, que es lo que muestra su Administrador de tareas.
+- **Modo icono, panel por panel**: en formato automático solo se condensan a icono los paneles que de verdad llegan a los iconos de las apps. Antes, al arrastrar uno (por ejemplo la radio) hasta los iconos se condensaban también todos los demás, aunque tuvieran sitio de sobra. Con los iconos centrados, un panel arrastrado al espacio libre a la izquierda del botón Inicio conserva su formato completo.
+- **Ventana de radio**: corregido, a veces se quedaba abierta después de usar el buscador. El foco del teclado se comprueba ahora de verdad y solo mantiene la ventana abierta mientras se escribe (6 s tras la última tecla o clic una vez que el cursor ha salido).
+
 ## v1.5.1
 
 - **Panel de radio más estrecho**: ahora termina donde termina el letrero **ON AIR** (94 px en vez de 176) y el nombre de la emisora va debajo como **banner** que se desplaza cuando no cabe. Mientras conecta, el letrero muestra `• • •`.
