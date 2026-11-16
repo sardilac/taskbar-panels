@@ -20,8 +20,8 @@ all in a single process using ~5–10 MB of private memory and less than 1 % of 
 | **Media** (while something is playing or paused) | Album art with an animated vinyl, previous / play / next buttons tinted with the album color, scrolling title, progress and audio spectrum (5 styles: liquid wave, capsule bars, segmented LED, mirrored bars or neon line) | Large album art, title, artist, album, app, times and spectrum |
 | **System** | CPU and GPU (usage + temperature), FPS of the active window, system-drive ring (% used) and a **status dot** that turns amber or red when something needs attention | CPU model, every GPU (NVIDIA, AMD Radeon, Intel) and the NPU, clocks, fans, VRAM, power, RAM, every drive as a ring and disk I/O charts, **animated fans** that spin with the real rpm, and **power**: battery (level, charging animation, watts, time left) and the active **power plan**; **alerts** (sustained high temperature, memory or system drive almost full, low battery) and the **apps using the most** CPU and memory. Cards are laid out in two columns |
 | **AI usage** | The primary provider with its icon (or a summary of all of them) | One card per provider: icon, plan, bars, spend and resets (local time) |
-| **Network** | Upload and download with 60 s charts, public IP with status indicator and a **connection health** dot (green / amber / red) | **Connection health**: a one-line diagnosis (stable, unstable Wi-Fi, provider issue, slow DNS…) with a 2-minute latency and loss timeline for router, DNS and Internet; ISP, location, **country flag** of the IP, router with gateway, DNS, adapter and **gateway ping** (only while the flyout is open), last-minute peaks, session totals and an on-demand **speed test** (Speedtest.net, Cloudflare, LibreSpeed or GCI) |
-| **Radio** | Musical note with an **ON AIR** sign and the station name while it plays; in icon mode, a **red musical note** with a dot showing it is on air | Current station (status, city and country, format, time on air), play / stop and volume, and, below, first the **country** (all of the **Americas** and **Europe**) and then its stations, with a **search box** for countries and stations, from the [Radio Browser](https://www.radio-browser.info) directory; click a station to listen, mouse wheel or arrows to scroll the list |
+| **Network** | Upload and download with 60 s charts, public IP with status indicator and a **connection health** dot (green / amber / red); in icon mode, **two concentric rings** (download and upload) with the download speed below | **Connection health**: a one-line diagnosis (stable, unstable Wi-Fi, provider issue, slow DNS…) with a 2-minute latency and loss timeline for router, DNS and Internet; ISP, location, **country flag** of the IP, router with gateway, DNS, adapter and **gateway ping** (only while the flyout is open), last-minute peaks, session totals and an on-demand **speed test** (Speedtest.net, Cloudflare, LibreSpeed or GCI) |
+| **Radio** | Narrow panel: musical note with an **ON AIR** sign while it plays and, below it, the station name as a scrolling **banner**; in icon mode, a **red musical note** with a dot showing it is on air | Current station (status, city and country, format, time on air), play / stop and volume, and, below, first the **country** (all of the **Americas** and **Europe**) and then its stations, with a **search box** for countries and stations, from the [Radio Browser](https://www.radio-browser.info) directory; click a station to listen, mouse wheel or arrows to scroll the list |
 
 <p>
   <img src="docs/images/popup-sistema.png" width="300" alt="System flyout">
@@ -131,7 +131,7 @@ Settings (`%APPDATA%\TaskbarPanels`) are kept when uninstalling.
 - **Open Claude / Copilot usage** (official web pages)
 - **Panels**: enable or disable each panel
 - **Displays**: all, primary only or a selection of monitors
-- **Panel format**: system and AI automatic (icon if it does not fit), panel or icon; network as panel or icon
+- **Panel format**: system, AI, network and radio automatic (icon if they do not fit, e.g. with many open windows), panel or icon
 - **Spectrum style**: liquid wave, capsule bars, segmented LED, mirrored bars or neon line
 - **AI**: primary provider, enable/disable providers, **add** (OpenAI API, Anthropic API, Gemini, DeepSeek, Kimi, Ollama local and Cloud, LM Studio, custom JSON URL), remove and **GitHub token for Copilot**
 - **Window background**: frosted glass, clear glass, Windows acrylic, mica or solid (all follow light/dark mode)
@@ -153,7 +153,7 @@ Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 | `Displays` | `"primary"`, `"all"`, `["SAM7B0C", ...]` | Displays where the panels are shown (EDID codes, see `MonitorIds`) |
 | `PanelDisplays` | `{ "MediaPanel": ["..."] }` | Per-panel selection: `NetworkPanel`, `UsagePanel`, `SystemPanel`, `MediaPanel` |
 | `Panels` | `{ "SystemPanel": false }` | Enable or disable panels |
-| `PanelStyle` | `{ "SystemPanel" / "UsagePanel": "auto" \| "full" \| "icon", "NetworkPanel": "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit). On vertical taskbars the three are icons unless set to `"full"` |
+| `PanelStyle` | `{ "SystemPanel" / "UsagePanel" / "NetworkPanel" / "RadioPanel": "auto" \| "full" \| "icon" }` | Taskbar format: detailed panel or icon (`auto` = icon only if it does not fit). On vertical taskbars the three are icons unless set to `"full"` |
 | `AiProviders` | list of providers | `{ "id", "type": "claude" \| "copilot" \| "openai" \| "anthropic_api" \| "gemini" \| "deepseek" \| "kimi" \| "ollama" \| "ollama_cloud" \| "lmstudio" \| "custom", "name", "enabled", "budget" }`; custom ones add `url`, `percentField`, `valueField`, `labelField`. Keys go to Windows Credential Manager (`TaskbarPanels:<id>`) |
 | `AiPrimary` | `"all"` or an `id` | Provider shown on the taskbar |
 | `SpeedTestProvider` | `ookla` (default) / `cloudflare` / `librespeed` / `gci` | Speed-test provider of the network flyout |
@@ -231,7 +231,7 @@ and a fork of `microsoft/winget-pkgs` in the same account.
   - `api.github.com` / `github.com` only during installation, to download PresentMon;
   - ICMP ping to the **local gateway**, only while the network flyout is open;
   - connection health: one ICMP ping every 2 s to the local gateway, to your DNS server and to `1.1.1.1` (`8.8.8.8` if it does not reply); it can be turned off from the menu (*Connection health*) or with `"NetHealth": false`;
-  - the chosen speed-test provider (`speed.cloudflare.com`, Speedtest.net servers via `www.speedtest.net/api/js/servers`, public LibreSpeed servers via `librespeed.org/backend-servers` or `speedtest.gci.co.cr`), only when you press **Start test** in the network flyout (up to ~350 MB).
+  - the chosen speed-test provider (`speed.cloudflare.com`, Speedtest.net servers via `www.speedtest.net/api/js/servers`, public LibreSpeed servers via `librespeed.org/backend-servers` or `speedtest.gci.co.cr`), only when you press **Start test** in the network flyout (8 s of download and 8 s of upload; data use grows with speed: about 150 MB on a symmetric 100 Mb/s line, close to 1.5 GB on 1 Gb/s).
 - The Claude and Copilot usage endpoints are **undocumented**: they may change without notice.
   If they return an error or a rate limit (429), the last values are kept.
 - The program **does not refresh** the Claude Code token: if it expires, it is renewed the next time you open Claude Code.

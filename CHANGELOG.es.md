@@ -2,6 +2,15 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.5.1
+
+- **Panel de radio más estrecho**: ahora termina donde termina el letrero **ON AIR** (94 px en vez de 176) y el nombre de la emisora va debajo como **banner** que se desplaza cuando no cabe. Mientras conecta, el letrero muestra `• • •`.
+- **Red en modo icono**: pasa a ser un **círculo** como el de sistema: dos anillos concéntricos (bajada fuera, subida dentro, cada uno respecto a su máximo del último minuto) con la velocidad de bajada debajo.
+- **Red en formato automático**: el panel de red también se condensa a icono cuando la barra se llena de ventanas, igual que sistema, IA y radio. Es el nuevo valor por defecto; se elige en *Formato de los paneles → Red: automático* (`"NetworkPanel": "auto"`).
+- **Speed test**:
+  - La medición ya no se corta a la mitad en conexiones rápidas: cada fase dura siempre 8 s (antes se detenía al llegar a 250 MB de bajada o 100 MB de subida). Los datos usados ahora dependen de la velocidad: unos 150 MB con 100 Mb/s simétricos, cerca de 1,5 GB con 1 Gb/s.
+  - Corregido: el botón **Iniciar prueba** dejaba de responder después de abrir la ventana de radio.
+
 ## v1.5.0
 
 - **Panel de radio** (nuevo): emisoras por Internet de todos los países de América y Europa (directorio Radio Browser; el catálogo de cada país se guarda y se renueva a diario). En la barra muestra el letrero **ON AIR** con el nombre de la emisora mientras suena y, en modo icono, una nota musical roja. La ventana flotante permite elegir primero el país y luego la emisora, buscar por nombre, ciudad o género (también en el directorio completo del país), detener o reanudar, ajustar el volumen y ver los datos de la emisora actual. La emisora también aparece en los controles multimedia de Windows (y en el panel multimedia, con su espectro). Se activa o desactiva en *Paneles → Radio* y su formato (automático, panel o icono) en *Formato de los paneles*. Diagnóstico: `taskbar-panels.exe --radio-report <archivo>`.

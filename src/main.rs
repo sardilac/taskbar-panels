@@ -83,7 +83,7 @@ impl Kind {
             Kind::Usage => 170.0,
             Kind::System => 150.0, // métricas (110) + anillo del disco del sistema
             Kind::Media => media_w(),
-            Kind::Radio => 176.0,
+            Kind::Radio => 94.0, // nota + letrero «ON AIR»; el nombre se desplaza debajo
         }
     }
 }
@@ -859,38 +859,40 @@ fn paint_system_compact(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::Sta
     level_dot(c, w, sc, sys_level(s));
 }
 
-/// Modo icono de la red: bajada y subida en formato corto sobre la gráfica de bajada
+/// Modo icono de la red: dos anillos concéntricos (bajada fuera, subida dentro; cada uno respecto
+/// a su máximo del último minuto) y la velocidad de bajada debajo
 fn paint_ip_compact(c: &mut Surface, w: f32, h: f32, sc: f32, s: &state::State) {
-    let maxv = s.hist_down.iter().chain(s.hist_up.iter()).fold(8_000.0f32, |m, v| m.max(*v)) * 1.15;
-    c.sparkline(0.0, h * 0.15, w, h * 0.8, &s.hist_down, maxv, DOWN_COL, 0.7);
-    let px = (8.5 * sc).min(h * 0.26);
-    let row = h * 0.42;
-    for (i, (glyph, bps, col)) in [("\u{E896}", s.down_bps, DOWN_COL), ("\u{E898}", s.up_bps, UP_COL)].iter().enumerate() {
-        let y = h * 0.08 + i as f32 * row;
-        let gw = px * 1.05;
-        c.text(glyph, 1.0 * sc, y, gw, row, (px * 0.95).floor(), 400, "Segoe Fluent Icons", *col, DT_CENTER);
-        c.text(&rate_short(*bps), 1.0 * sc + gw, y, w - gw - 2.0 * sc, row, px, 700, "Segoe UI", col.mix(WHITE, 0.35), DT_LEFT);
-    }
+    let r = (w.min(h) * 0.27).min(12.0 * sc);
+    let (cx, cy) = (w / 2.0, h * 0.36);
+    let thick = (r * 0.26).max(2.2);
+    // escala de raíz: el tráfico ligero también se ve en el anillo
+    let frac = |v: f64, hist: &[f32]| {
+        let maxv = hist.iter().fold(8_000.0f32, |m, x| m.max(*x)).max(v as f32);
+        (v as f32 / maxv).clamp(0.0, 1.0).sqrt()
+    };
+    c.donut(cx, cy, r, thick, frac(s.down_bps, &s.hist_down), DOWN_COL, DOWN_COL.mix(WHITE, 0.3), 2.0 * sc);
+    let r2 = r - thick - 1.5 * sc;
+    c.donut(cx, cy, r2, thick, frac(s.up_bps, &s.hist_up), UP_COL, UP_COL.mix(WHITE, 0.3), 0.0);
+    c.text(&rate_short(s.down_bps), 0.0, h * 0.62, w, h * 0.36, (8.5 * sc).min(h * 0.24), 700, "Segoe UI", DOWN_COL, DT_CENTER);
     health_dot(c, w, sc);
 }
 
 /// Formato de un panel en la barra: "auto" (icono solo si no cabe), "full" (panel) o "icon"
 fn panel_mode(cfg: &Config, k: Kind) -> &'static str {
-    let def = match k {
-        Kind::Usage | Kind::System | Kind::Radio => "auto",
-        _ => "full",
-    };
+    // el multimedia no tiene modo icono; los demás se condensan solos si no caben
+    if k == Kind::Media {
+        return "full";
+    }
     match cfg.v["PanelStyle"][k.name()].as_str() {
-        Some("icon") if k != Kind::Media => "icon",
+        Some("icon") => "icon",
         Some("full") => "full",
-        Some("auto") if matches!(k, Kind::Usage | Kind::System | Kind::Radio) => "auto",
-        _ => def,
+        _ => "auto",
     }
 }
 
 /// Ancho (px lógicos) de un panel en modo icono
-fn compact_width(k: Kind) -> f32 {
-    if k == Kind::Ip { 50.0 } else { 44.0 }
+fn compact_width(_k: Kind) -> f32 {
+    44.0
 }
 
 /// Alto (px lógicos) de la ventana flotante de IA según proveedores e indicadores
@@ -1468,8 +1470,11 @@ thread_local! {
     static POPUP_HOVER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-fn popup_hit(x: f32, y: f32) -> u32 {
-    POPUP_HITS.with(|h| h.borrow().iter().find(|r| x >= r.0 && x < r.2 && y >= r.1 && y < r.3).map(|r| r.4).unwrap_or(0))
+/// Zona pulsable bajo el cursor. Cada zona pertenece a una ventana y las de la otra siguen en la
+/// lista: solo se miran las de la ventana abierta (`radio`), o una zona vieja de la radio taparía
+/// el botón del speed test.
+fn popup_hit(x: f32, y: f32, radio: bool) -> u32 {
+    POPUP_HITS.with(|h| h.borrow().iter().find(|r| (r.4 >= ACT_RADIO_TOGGLE) == radio && x >= r.0 && x < r.2 && y >= r.1 && y < r.3).map(|r| r.4).unwrap_or(0))
 }
 
 fn fmt_mbps(v: f64) -> String {
@@ -1561,7 +1566,7 @@ fn paint_speed_card(c: &mut Surface, x: f32, y: f32, cw: f32, sc: f32) -> f32 {
             _ => tr("Probar de nuevo", "Test again"),
         };
         c.raw(|c| c.text(label, bx, by, bw, bh, 10.0 * sc, 600, "Segoe UI", WHITE, DT_CENTER));
-        let note = if s.phase == Phase::Error && !s.error.is_empty() { s.error.clone() } else if meta.is_empty() { tr("usa hasta ~350 MB", "uses up to ~350 MB").to_string() } else { meta.clone() };
+        let note = if s.phase == Phase::Error && !s.error.is_empty() { s.error.clone() } else if meta.is_empty() { tr("~20 s · usa datos según la velocidad", "~20 s · data use grows with speed").to_string() } else { meta.clone() };
         c.text(&note, bx, by - 15.0 * sc, bw, 13.0 * sc, 8.0 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
         POPUP_HITS.with(|h| {
             let mut h = h.borrow_mut();
@@ -1804,12 +1809,12 @@ fn draw_note(c: &mut Surface, cx: f32, cy: f32, size: f32, on_air: bool, t: f32)
 
 /// Letrero de estado: «ON AIR» en rojo sólido (parpadea cada segundo) mientras suena; si no, una
 /// píldora tenue con el estado. Devuelve el ancho.
-fn on_air_sign(c: &mut Surface, x: f32, yc: f32, px: f32, sc: f32, n: &radio::Now, t: f32) -> f32 {
+fn on_air_sign(c: &mut Surface, x: f32, yc: f32, px: f32, sc: f32, n: &radio::Now, t: f32, min_w: f32) -> f32 {
     match n.status {
         radio::Status::Playing => {
             let label = "ON AIR";
             let tw = c.text_width(label, px, 700, "Segoe UI");
-            let (bw, bh) = (tw + 10.0 * sc, (px + 5.0 * sc).round());
+            let (bw, bh) = ((tw + 10.0 * sc).max(min_w), (px + 5.0 * sc).round());
             let lit = if (t as u32) % 2 == 0 { 1.0 } else { 0.78 };
             c.raw(|c| {
                 c.round_rect(x - 1.5 * sc, yc - bh / 2.0 - 1.5 * sc, bw + 3.0 * sc, bh + 3.0 * sc, 4.0 * sc, AIR_COL, 0.28 * lit);
@@ -1818,26 +1823,44 @@ fn on_air_sign(c: &mut Surface, x: f32, yc: f32, px: f32, sc: f32, n: &radio::No
             });
             bw
         }
+        // con ancho fijo (panel de la barra) el letrero largo no cabe: puntos suspensivos
+        radio::Status::Connecting if min_w > 0.0 => badge(c, x, yc, "• • •", px, RAM_COL, sc, min_w),
         radio::Status::Connecting => badge(c, x, yc, tr("CONECTANDO…", "CONNECTING…"), px, RAM_COL, sc, 0.0),
-        radio::Status::Error => badge(c, x, yc, "ERROR", px, HEALTH_BAD, sc, 0.0),
-        radio::Status::Stopped => badge(c, x, yc, "RADIO", px, DIM, sc, 0.0),
+        radio::Status::Error => badge(c, x, yc, "ERROR", px, HEALTH_BAD, sc, min_w),
+        radio::Status::Stopped => badge(c, x, yc, "RADIO", px, DIM, sc, min_w),
     }
 }
 
-/// Panel en la barra: nota + letrero «ON AIR» y nombre de la emisora
+/// El nombre de la emisora no cabe en algún panel de radio y se desplaza: hay que animarlo
+static RADIO_BANNER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Panel en la barra: nota + letrero «ON AIR» (el panel termina donde termina el letrero) y, debajo,
+/// el nombre de la emisora como banner que se desplaza si no cabe
 fn paint_radio(c: &mut Surface, w: f32, h: f32, sc: f32, n: &radio::Now, t: f32) {
     let isz = (h * 0.44).min(19.0 * sc);
     draw_note(c, isz + 2.0 * sc, h / 2.0, isz, n.on_air(), t);
     let tx = isz * 2.0 + 6.0 * sc;
-    let tw = (w - tx - 2.0 * sc).max(0.0);
+    let tw = (w - tx - 3.0 * sc).max(0.0);
     let px = (11.5 * sc).min((h * 0.32).floor());
-    on_air_sign(c, tx, h * 0.29, (px * 0.8).floor(), sc, n, t);
+    on_air_sign(c, tx, h * 0.29, (px * 0.8).floor(), sc, n, t, tw);
     let name: &str = match &n.station {
         Some(s) => &s.name,
         None => tr("Elige una emisora", "Pick a station"),
     };
     let col = if n.on_air() { WHITE } else { Rgb::u8(190, 198, 216) };
-    c.text(name, tx, h * 0.5, tw, h * 0.44, px, 600, "Segoe UI", col, DT_LEFT | DT_END_ELLIPSIS);
+    let (ny, nh) = (h * 0.5, h * 0.44);
+    let nw = c.text_width(name, px, 600, "Segoe UI");
+    if nw <= tw {
+        c.text(name, tx, ny, tw, nh, px, 600, "Segoe UI", col, DT_LEFT);
+    } else {
+        RADIO_BANNER.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (speed, gap, wait) = (24.0 * sc, 26.0 * sc, 1.5);
+        let ph = t % ((nw + gap) / speed + wait);
+        let off = if ph < wait { 0.0 } else { (ph - wait) * speed };
+        let (c0, c1, fade) = (tx, tx + tw, 5.0 * sc);
+        c.text_clip(name, tx - off, ny, nh, px, 600, "Segoe UI", col, c0, c1, fade);
+        c.text_clip(name, tx - off + nw + gap, ny, nh, px, 600, "Segoe UI", col, c0, c1, fade);
+    }
 }
 
 /// Modo icono: nota musical roja; un punto indica que está al aire (rojo) o conectando (ámbar)
@@ -1888,7 +1911,7 @@ fn paint_popup_radio(c: &mut Surface, w: f32, _h: f32, sc: f32, t: f32) {
     let (bcx, bcy) = (pad + cw - 12.0 * sc - bsz / 2.0, icy);
     let tx = icx + ir + 12.0 * sc;
     let tw = bcx - bsz / 2.0 - 8.0 * sc - tx;
-    on_air_sign(c, tx, y0 + 17.0 * sc, 9.0 * sc, sc, &n, t);
+    on_air_sign(c, tx, y0 + 17.0 * sc, 9.0 * sc, sc, &n, t, 0.0);
     match &n.station {
         Some(s) => {
             c.text(&s.name, tx, y0 + 27.0 * sc, tw, 22.0 * sc, 15.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT | DT_END_ELLIPSIS);
@@ -3641,6 +3664,30 @@ unsafe fn render_kind(media_only: bool) {
     });
 }
 
+/// Redibuja solo los paneles de radio (banner en movimiento). `paint_radio` vuelve a activar
+/// `RADIO_BANNER` mientras algún nombre siga sin caber.
+unsafe fn render_radio() {
+    RADIO_BANNER.store(false, std::sync::atomic::Ordering::Relaxed);
+    let n = radio::now();
+    with_app(|app| {
+        let t = app.t0.elapsed().as_secs_f32();
+        let lights = app.bar_light.clone();
+        for p in app.panels.iter_mut().filter(|p| p.kind == Kind::Radio && !p.compact && !p.vertical) {
+            if !IsWindowVisible(p.hwnd).as_bool() {
+                continue;
+            }
+            let mut rc = RECT::default();
+            let _ = GetClientRect(p.hwnd, &mut rc);
+            let Some(mut surf) = p.surf.take().filter(|s| s.w == rc.right && s.h == rc.bottom) else { continue };
+            render::set_light(lights.get(&p.tb_key).copied().unwrap_or_else(render::system_light));
+            surf.clear();
+            paint_radio(&mut surf, rc.right as f32, rc.bottom as f32, p.scale, &n, t);
+            surf.present(p.hwnd);
+            p.surf = Some(surf);
+        }
+    });
+}
+
 // ======================================================================= sincronización de ventanas
 /// Crea el panel como ventana hija de la barra de tareas: así forma parte de la barra y sigue visible
 /// cuando Windows la sube de capa (menú Inicio abierto, clics en la barra). Si Windows no lo permite,
@@ -3759,7 +3806,7 @@ unsafe fn sync(app: &mut App) {
             place_vertical(&mut app.panels, b, &app.cfg, hide, show_ip, usage, media_active);
             continue;
         }
-        // ¿Choca la cadena de paneles de la derecha con los iconos de apps? → sistema e IA en modo icono
+        // ¿Choca la cadena de paneles de la derecha con los iconos de apps? → los automáticos en modo icono
         // (formato elegido por panel: "icon" fijo, "full" fijo, "auto" = icono solo si no cabe)
         let present = |k: Kind| app.panels.iter().any(|p| p.kind == k && p.tb_key == b.key);
         let modes: Vec<(Kind, &str)> = CHAIN.iter().map(|k| (*k, panel_mode(&app.cfg, *k))).collect();
@@ -3977,6 +4024,7 @@ const ID_EXIT: usize = 99;
 const ID_FMT_RADIO_AUTO: usize = 210;
 const ID_FMT_RADIO_FULL: usize = 211;
 const ID_FMT_RADIO_ICON: usize = 212;
+const ID_FMT_NET_AUTO: usize = 213;
 
 /// Agrega un submenú con texto traducido
 unsafe fn append_sub(menu: HMENU, sub: HMENU, text: &str) {
@@ -4034,7 +4082,7 @@ unsafe fn show_menu(main: HWND) {
         append_sub(menu, sub, tr("Pantallas", "Displays"));
     }
     let (sys_mode, net_mode, ai_mode) =
-        with_app(|a| (panel_mode(&a.cfg, Kind::System), panel_mode(&a.cfg, Kind::Ip), panel_mode(&a.cfg, Kind::Usage))).unwrap_or(("auto", "full", "auto"));
+        with_app(|a| (panel_mode(&a.cfg, Kind::System), panel_mode(&a.cfg, Kind::Ip), panel_mode(&a.cfg, Kind::Usage))).unwrap_or(("auto", "auto", "auto"));
     if let Ok(sub) = CreatePopupMenu() {
         append(sub, ID_FMT_AI_AUTO, tr("IA: automático (icono si no cabe)", "AI: automatic (icon if it does not fit)"), ai_mode == "auto");
         append(sub, ID_FMT_AI_FULL, tr("IA: panel", "AI: panel"), ai_mode == "full");
@@ -4044,6 +4092,7 @@ unsafe fn show_menu(main: HWND) {
         append(sub, ID_FMT_SYS_FULL, tr("Sistema: panel", "System: panel"), sys_mode == "full");
         append(sub, ID_FMT_SYS_ICON, tr("Sistema: icono", "System: icon"), sys_mode == "icon");
         let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
+        append(sub, ID_FMT_NET_AUTO, tr("Red: automático (icono si no cabe)", "Network: automatic (icon if it does not fit)"), net_mode == "auto");
         append(sub, ID_FMT_NET_FULL, tr("Red: panel", "Network: panel"), net_mode == "full");
         append(sub, ID_FMT_NET_ICON, tr("Red: icono", "Network: icon"), net_mode == "icon");
         let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
@@ -4189,7 +4238,7 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
                 app.cfg.v["PopupStyle"] = serde_json::json!(POPUP_STYLES[c - ID_POPUP_STYLE_BASE].0);
                 save = true;
             }
-            ID_FMT_SYS_AUTO | ID_FMT_SYS_FULL | ID_FMT_SYS_ICON | ID_FMT_NET_FULL | ID_FMT_NET_ICON | ID_FMT_AI_AUTO | ID_FMT_AI_FULL | ID_FMT_AI_ICON | ID_FMT_RADIO_AUTO | ID_FMT_RADIO_FULL | ID_FMT_RADIO_ICON => {
+            ID_FMT_SYS_AUTO | ID_FMT_SYS_FULL | ID_FMT_SYS_ICON | ID_FMT_NET_AUTO | ID_FMT_NET_FULL | ID_FMT_NET_ICON | ID_FMT_AI_AUTO | ID_FMT_AI_FULL | ID_FMT_AI_ICON | ID_FMT_RADIO_AUTO | ID_FMT_RADIO_FULL | ID_FMT_RADIO_ICON => {
                 let (k, v) = match cmd {
                     ID_FMT_AI_AUTO => (Kind::Usage, "auto"),
                     ID_FMT_AI_FULL => (Kind::Usage, "full"),
@@ -4197,6 +4246,7 @@ unsafe fn on_command(main: HWND, cmd: usize, monitors: &[(String, String, bool)]
                     ID_FMT_SYS_AUTO => (Kind::System, "auto"),
                     ID_FMT_SYS_FULL => (Kind::System, "full"),
                     ID_FMT_SYS_ICON => (Kind::System, "icon"),
+                    ID_FMT_NET_AUTO => (Kind::Ip, "auto"),
                     ID_FMT_NET_FULL => (Kind::Ip, "full"),
                     ID_FMT_RADIO_AUTO => (Kind::Radio, "auto"),
                     ID_FMT_RADIO_FULL => (Kind::Radio, "full"),
@@ -4445,6 +4495,10 @@ unsafe fn on_fast_timer() {
     if tick % every == 0 {
         util::timed("media", || render_kind(true));
     }
+    // radio: el banner con el nombre de la emisora solo se anima (30 fps) si no cabe
+    if tick % 2 == 0 && RADIO_BANNER.load(std::sync::atomic::Ordering::Relaxed) {
+        util::timed("radio", || render_radio());
+    }
     util::timed("hover", || update_popup());
 }
 
@@ -4584,9 +4638,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (x, y) = ((lp.0 & 0xFFFF) as i16 as f32, ((lp.0 >> 16) & 0xFFFF) as i16 as f32);
             // cada zona pertenece a una ventana: las de otra (que siguen en la lista) no cuentan
             let kind = with_app(|a| a.popup_kind).flatten();
-            let hit = match (kind, popup_hit(x, y)) {
-                (Some(Kind::Radio), h) if h >= ACT_RADIO_TOGGLE => h,
-                (Some(Kind::Ip), h) if h < ACT_RADIO_TOGGLE => h,
+            let hit = match kind {
+                Some(Kind::Radio) => popup_hit(x, y, true),
+                Some(Kind::Ip) => popup_hit(x, y, false),
                 _ => 0,
             };
             if msg == WM_LBUTTONUP && kind == Some(Kind::Radio) {
@@ -4887,7 +4941,7 @@ fn render_demo_theme(dir: &str, light: bool) {
     let bar_bg = if light { (238u8, 240u8, 245u8) } else { (26u8, 30u8, 48u8) };
 
     // ---- barra horizontal: multimedia a la izquierda, sistema · consumo · red a la derecha
-    let widths = [(Kind::Media, 660.0), (Kind::Radio, 176.0), (Kind::System, 236.0), (Kind::Usage, 150.0), (Kind::Ip, 112.0)];
+    let widths = [(Kind::Media, 660.0), (Kind::Radio, 94.0), (Kind::System, 236.0), (Kind::Usage, 150.0), (Kind::Ip, 112.0)];
     let mut parts = Vec::new();
     for (kind, lw) in widths {
         let w = (lw * sc) as i32;

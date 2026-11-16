@@ -2,6 +2,15 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.5.1
+
+- **Narrower radio panel**: it now ends where the **ON AIR** sign ends (94 px instead of 176) and the station name sits below it as a **banner** that scrolls when it does not fit. While connecting, the sign shows `• • •`.
+- **Network in icon mode**: it is now a **circle** like the system one: two concentric rings (download outside, upload inside, each relative to its last-minute peak) with the download speed below.
+- **Network in automatic format**: the network panel also collapses to an icon when the taskbar fills up with windows, like system, AI and radio. It is the new default; choose it under *Panel format → Network: automatic* (`"NetworkPanel": "auto"`).
+- **Speed test**:
+  - The measurement no longer stops halfway on fast connections: each phase always lasts 8 s (it used to stop at 250 MB of download or 100 MB of upload). Data use now grows with speed: about 150 MB on a symmetric 100 Mb/s line, close to 1.5 GB on 1 Gb/s.
+  - Fixed: the **Start test** button stopped responding after the radio flyout had been opened.
+
 ## v1.5.0
 
 - **Radio panel** (new): Internet radio stations from every country in the Americas and Europe (Radio Browser directory; each country catalog is cached and refreshed daily). On the taskbar it shows an **ON AIR** sign with the station name while it plays and, in icon mode, a red musical note. The popup lets you pick the country first and then the station, search by name, city or genre (also across the full directory of the country), stop or resume, adjust the volume and see the current station details. The station also shows up in the Windows media controls (and in the media panel, with its spectrum). Enable or disable it under *Panels → Radio*; choose its format (automatic, panel or icon) under *Panel format*. Diagnostics: `taskbar-panels.exe --radio-report <file>`.

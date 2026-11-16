@@ -5,7 +5,7 @@
 //! - `gci`: servidor LibreSpeed de GCI (speedtest.gci.co.cr, Costa Rica)
 //!
 //! Mide latencia/jitter (6 peticiones vacías), bajada y subida con 4 conexiones en paralelo durante
-//! ~8 s cada una, con topes de datos (250 MB de bajada, 100 MB de subida).
+//! 8 s cada una; los datos usados dependen de la velocidad (≈ 1 MB por cada Mb/s en cada fase).
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -77,8 +77,11 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 const STREAMS: usize = 4;
 const PHASE_SECS: f64 = 8.0;
 const WARMUP_SECS: f64 = 1.0;
-const DOWN_CAP: u64 = 250_000_000;
-const UP_CAP: u64 = 100_000_000;
+// Topes de seguridad, no de medición: cada fase dura siempre PHASE_SECS (con topes bajos, una
+// conexión rápida los alcanzaba a mitad de la fase y la medición se cortaba). Equivalen a
+// 2,5 Gb/s de bajada y 1,25 Gb/s de subida sostenidos.
+const DOWN_CAP: u64 = 2_500_000_000;
+const UP_CAP: u64 = 1_250_000_000;
 
 fn set(f: impl FnOnce(&mut Speed)) {
     f(&mut SPEED.lock().unwrap());
@@ -146,7 +149,7 @@ fn target_cloudflare(a: &ureq::Agent) -> Result<Target, String> {
     let colo = r.header("cf-ray").and_then(|ray| ray.rsplit('-').next()).unwrap_or("").to_string();
     Ok(Target {
         ping: "https://speed.cloudflare.com/__down?bytes=0".into(),
-        down: ("https://speed.cloudflare.com/__down?bytes={size}".into(), DOWN_CAP / STREAMS as u64),
+        down: ("https://speed.cloudflare.com/__down?bytes={size}".into(), 50_000_000),
         up: "https://speed.cloudflare.com/__up".into(),
         up_chunk: 16_000_000,
         label: colo,
