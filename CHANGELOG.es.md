@@ -2,6 +2,10 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.6.1
+
+- **Radio y panel multimedia**: al detener la emisora desde la ventana de radio, el panel multimedia se cierra (antes podía quedarse con la sesión ya detenida). En pausa desde el panel multimedia sigue abierto para poder reanudar, pero si pasa 1 minuto sin reanudar la emisora se cierra y el panel se oculta.
+
 ## v1.6.0
 
 - **Widgets de escritorio**: cada ventana de detalle tiene ahora un **pin** en la esquina superior derecha. Al pulsarlo, la ventana queda fijada al escritorio como widget, en el punto donde estaba: por debajo de todas las ventanas, visible cuando el escritorio queda a la vista (o con *Mostrar escritorio*, Win+D). Se mueve **arrastrándola** desde cualquier punto, en cualquier pantalla, y la posición se guarda; otro clic en el pin la suelta. Se puede fijar cualquiera de las cinco (sistema, red, IA, multimedia y radio) y siguen siendo funcionales: la radio cambia de emisora y la de red lanza el speed test. Las posiciones se guardan en `DeskWidget`.

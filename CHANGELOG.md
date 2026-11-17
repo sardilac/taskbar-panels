@@ -2,6 +2,10 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.6.1
+
+- **Radio and media panel**: stopping the station from the radio flyout now closes the media panel (it could stay up showing the stopped session). Paused from the media panel it stays open so it can be resumed, but after 1 minute without resuming the station is closed and the panel hides.
+
 ## v1.6.0
 
 - **Desktop widgets**: every detail flyout now has a **pin** in its top-right corner. Clicking it pins the flyout to the desktop as a widget, right where it was: below every window, visible whenever the desktop is in view (or with *Show desktop*, Win+D). **Drag** it from anywhere to move it, on any screen, and the position is saved; another click on the pin releases it. Any of the five can be pinned (system, network, AI, media and radio) and they stay functional: the radio switches stations and the network one starts the speed test. Positions are stored in `DeskWidget`.

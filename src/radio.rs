@@ -11,6 +11,7 @@ use crate::util::{appdata_dir, now_epoch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -63,6 +64,9 @@ const CATALOG_V: u32 = 3;
 const LIST_TTL: i64 = 86_400;
 const KEEP_LISTS: usize = 15;
 const HOSTS: [&str; 2] = ["de1", "all"];
+/// en pausa desde los controles multimedia: pasado este tiempo sin reanudar se cierra la emisora
+/// (y con ella su sesión multimedia, así que el panel multimedia se oculta)
+const PAUSE_CLOSE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -437,7 +441,21 @@ pub fn stop() {
         r.now.status = Status::Stopped;
         r.now.since = None;
     }
+    OPEN.store(false, Ordering::Relaxed);
     send(Cmd::Stop);
+}
+
+/// Hay una emisora abierta (sonando, conectando o en pausa desde los controles multimedia)
+static OPEN: AtomicBool = AtomicBool::new(false);
+
+/// La sesión multimedia de Windows con este título y artista es la de la radio, pero la emisora
+/// ya se detuvo: Windows puede conservar la sesión un tiempo y el panel multimedia no debe mostrarla
+pub fn stale_session(title: &str, artist: &str, own_app: bool) -> bool {
+    if OPEN.load(Ordering::Relaxed) {
+        return false;
+    }
+    let named = (artist == "Radio" || artist.starts_with("Radio · ")) && radio().now.station.as_ref().is_some_and(|s| s.name == title);
+    own_app || named
 }
 
 /// Detiene si suena (o está conectando); si no, vuelve a la última emisora
@@ -469,6 +487,8 @@ struct Player {
     failed: Arc<Mutex<Option<String>>>,
     started: Instant,
     was_playing: bool,
+    /// desde cuándo está en pausa (controles multimedia de Windows)
+    paused_at: Option<Instant>,
 }
 
 fn open(s: &Station, vol: f32) -> windows::core::Result<Player> {
@@ -498,7 +518,7 @@ fn open(s: &Station, vol: f32) -> windows::core::Result<Player> {
     mp.SetVolume(vol as f64)?;
     mp.SetSource(&item)?;
     mp.Play()?;
-    Ok(Player { mp, failed, started: Instant::now(), was_playing: false })
+    Ok(Player { mp, failed, started: Instant::now(), was_playing: false, paused_at: None })
 }
 
 /// Refleja el estado del reproductor en `RADIO`; devuelve false si hay que cerrarlo
@@ -522,11 +542,16 @@ fn poll(p: &mut Player) -> bool {
             }
             r.now.status = Status::Playing;
             p.was_playing = true;
+            p.paused_at = None;
         }
-        // en pausa desde los controles multimedia de Windows: se conserva para poder reanudar
+        // en pausa desde los controles multimedia de Windows: se conserva para poder reanudar,
+        // pero no indefinidamente
         MediaPlaybackState::Paused if p.was_playing => {
             r.now.status = Status::Stopped;
             r.now.since = None;
+            if p.paused_at.get_or_insert_with(Instant::now).elapsed() >= PAUSE_CLOSE {
+                return false;
+            }
         }
         _ if !p.was_playing && p.started.elapsed() > Duration::from_secs(25) => {
             return fail(&mut r, tr("La emisora no responde", "The station is not responding").to_string());
@@ -578,6 +603,7 @@ pub fn spawn_worker() {
             if player.as_mut().is_some_and(|p| !poll(p)) {
                 close(player.take());
             }
+            OPEN.store(player.is_some(), Ordering::Relaxed);
         }
     });
 }

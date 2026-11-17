@@ -110,19 +110,26 @@ pub fn send(c: Cmd) {
 }
 
 // ---------------------------------------------------------------- Sesión multimedia
+/// Sin sesión multimedia: el panel se oculta
+fn clear() {
+    let mut st = st();
+    st.title = crate::i18n::tr("Sin reproducción", "Nothing playing").into();
+    st.artist.clear();
+    st.media_app.clear();
+    st.playing = false;
+    drop(st);
+    *ART.lock().unwrap() = None;
+    *TIMELINE.lock().unwrap() = Timeline::default();
+}
+
+/// Nombre del ejecutable propio (sin extensión, en minúsculas): identifica la sesión de la radio
+static OWN_EXE: LazyLock<String> =
+    LazyLock::new(|| std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase())).unwrap_or_default());
+
 fn poll(mgr: &GlobalSystemMediaTransportControlsSessionManager) {
-    let Ok(s) = mgr.GetCurrentSession() else {
-        let mut st = st();
-        st.title = crate::i18n::tr("Sin reproducción", "Nothing playing").into();
-        st.artist.clear();
-        st.media_app.clear();
-        st.playing = false;
-        drop(st);
-        *ART.lock().unwrap() = None;
-        *TIMELINE.lock().unwrap() = Timeline::default();
-        return;
-    };
+    let Ok(s) = mgr.GetCurrentSession() else { return clear() };
     let app = s.SourceAppUserModelId().map(|h| h.to_string()).unwrap_or_default();
+    let own_app = !OWN_EXE.is_empty() && app.to_lowercase().trim_end_matches(".exe").ends_with(OWN_EXE.as_str());
     let app = app.rsplit('!').next().unwrap_or(&app).trim_end_matches(".exe").to_string();
     let props = s.TryGetMediaPropertiesAsync().and_then(|op| op.get()).ok();
     let title = props.as_ref().and_then(|p| p.Title().ok()).map(|h| h.to_string()).filter(|t| !t.is_empty());
@@ -139,6 +146,10 @@ fn poll(mgr: &GlobalSystemMediaTransportControlsSessionManager) {
         .unwrap_or(false);
     let title = title.unwrap_or_else(|| app.clone());
     let artist = artist.unwrap_or_else(|| app.clone());
+    // la radio detenida desde su ventana (o cerrada tras minutos en pausa) ya no cuenta como sesión
+    if crate::radio::stale_session(&title, &artist, own_app) {
+        return clear();
+    }
 
     // Carátula: solo se decodifica cuando cambia la pista
     let key = format!("{title}|{artist}|{app}");
