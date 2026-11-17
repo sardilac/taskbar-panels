@@ -533,18 +533,52 @@ impl Surface {
         }
     }
 
+    /// Tramo horizontal [xa, xb) de un color ya adaptado, con aritmética entera (interior de las
+    /// formas grandes: sin distancia al borde ni coma flotante por píxel)
+    fn span(&mut self, py: i32, xa: i32, xb: i32, c: Rgb, a: f32) {
+        let (xa, xb) = (xa.max(0), xb.min(self.w));
+        if !(a > 0.002) || py < 0 || py >= self.h || xa >= xb {
+            return;
+        }
+        let a = a.min(1.0);
+        let q = |v: f32| (v * a * 256.0).round().clamp(0.0, 65280.0) as u32;
+        let (sb, sg, sr, sa) = (q(c.2), q(c.1), q(c.0), q(255.0));
+        let inv = 256 - (a * 256.0).round() as u32;
+        let row = py * self.w;
+        for d in &mut self.px()[(row + xa) as usize..(row + xb) as usize] {
+            let v = *d;
+            let ch = |shift: u32, s: u32| ((s + ((v >> shift) & 0xFF) * inv + 128) >> 8).min(255);
+            *d = ch(0, sb) | ch(8, sg) << 8 | ch(16, sr) << 16 | ch(24, sa) << 24;
+        }
+    }
+
     /// Rectángulo redondeado con bordes suavizados
     #[allow(clippy::too_many_arguments)]
     pub fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, c: Rgb, a: f32) {
         let (hw, hh) = (w / 2.0, h / 2.0);
         let r = r.min(hw).min(hh);
+        let c = self.themed(c);
+        let (x0, x1) = (x.floor() as i32, (x + w).ceil() as i32);
+        let rr = r - 0.5;
         for py in y.floor() as i32..(y + h).ceil() as i32 {
-            for px in x.floor() as i32..(x + w).ceil() as i32 {
+            let qy = (py as f32 + 0.5 - y - hh).abs() - (hh - r);
+            // interior de la fila (cobertura total): se rellena de una vez; solo los bordes se
+            // calculan píxel a píxel
+            let hx = if qy <= 0.0 {
+                if qy <= rr { hw - 0.5 } else { -1.0 }
+            } else if qy < rr {
+                hw - r + (rr * rr - qy * qy).sqrt()
+            } else {
+                -1.0
+            } - 0.01;
+            let (xa, xb) = if hx > 0.0 { (((x + hw - hx - 0.5).ceil() as i32).max(x0), ((x + hw + hx - 0.5).floor() as i32 + 1).min(x1)) } else { (x1, x1) };
+            let (xa, xb) = if xa < xb { (xa, xb) } else { (x1, x1) };
+            for px in (x0..xa).chain(xb..x1) {
                 let qx = (px as f32 + 0.5 - x - hw).abs() - (hw - r);
-                let qy = (py as f32 + 0.5 - y - hh).abs() - (hh - r);
                 let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
-                self.blend(px, py, c, a * (0.5 - d).clamp(0.0, 1.0));
+                self.blend_raw(px, py, c, a * (0.5 - d).clamp(0.0, 1.0));
             }
+            self.span(py, xa, xb, c, a);
         }
     }
 
@@ -835,6 +869,42 @@ impl Surface {
             let src = POINT { x: 0, y: 0 };
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             let _ = UpdateLayeredWindow(hwnd, HDC::default(), None, Some(&size), self.main.dc, Some(&src), COLORREF(0), Some(&blend), ULW_ALPHA);
+        }
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    /// El relleno rápido del interior da lo mismo (±1 por redondeo) que el cálculo píxel a píxel
+    #[test]
+    fn round_rect_interior_matches_per_pixel() {
+        for &(x, y, w, h, r, a) in &[(3.3f32, 4.7f32, 90.5f32, 60.2f32, 8.0f32, 0.35f32), (0.0, 0.0, 120.0, 80.0, 0.0, 1.0), (10.0, 10.0, 30.0, 30.0, 15.0, 0.8), (5.5, 5.5, 100.0, 7.0, 3.5, 0.5), (-10.0, -10.0, 200.0, 200.0, 12.0, 0.6)] {
+            let mut s = Surface::new(128, 96).unwrap();
+            let mut t = Surface::new(128, 96).unwrap();
+            s.raw += 1;
+            t.raw += 1;
+            s.px().fill(0x4030_2010);
+            t.px().fill(0x4030_2010);
+            let c = Rgb::u8(200, 120, 40);
+            s.round_rect(x, y, w, h, r, c, a);
+            let (hw, hh) = (w / 2.0, h / 2.0);
+            let rq = r.min(hw).min(hh);
+            for py in 0..96 {
+                for px in 0..128 {
+                    let qx = (px as f32 + 0.5 - x - hw).abs() - (hw - rq);
+                    let qy = (py as f32 + 0.5 - y - hh).abs() - (hh - rq);
+                    let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rq;
+                    t.blend_raw(px, py, c, a * (0.5 - d).clamp(0.0, 1.0));
+                }
+            }
+            for (i, (p, q)) in s.pixels().iter().zip(t.pixels().iter()).enumerate() {
+                for sh in [0, 8, 16, 24] {
+                    let (u, v) = (((p >> sh) & 0xFF) as i32, ((q >> sh) & 0xFF) as i32);
+                    assert!((u - v).abs() <= 1, "pixel {i} canal {sh}: {u} vs {v} en {:?}", (x, y, w, h, r, a));
+                }
+            }
         }
     }
 }

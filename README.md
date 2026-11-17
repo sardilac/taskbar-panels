@@ -145,6 +145,8 @@ Also: the media buttons work without stealing focus from the active window, the 
 system panels can each be **dragged** horizontally on their own (they never overlap or leave the bar; one dropped to the left of the Start button keeps that same distance from the left edge on every screen, whatever its width), and **hovering** over a panel opens its detail flyout. In the
 network flyout, the speed-test card has a provider selector (click to switch) and a **Start test** button.
 
+**Desktop widgets**: the **pin** in the top-right corner of every detail flyout pins it to the desktop as a widget, below every window (visible when the desktop is in view or with Win+D). Drag it from anywhere to move it; another click on the pin releases it. Covered by other windows, a widget costs nothing measurable; in view, all five together add about 17 MB and around 1 % of one core.
+
 ## Settings
 
 Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
@@ -165,6 +167,7 @@ Stored in `%APPDATA%\TaskbarPanels\config.json` and applied live (≤ 5 s):
 | `MediaWidth` | `400`, `480`, `560` (default), `680`, `800` or any value from 320 to 1200 | Media panel width in logical pixels (*Media panel size* menu); it shrinks automatically if there is not enough room (no spectrum below 300 px, cover and buttons only down to 160 px) |
 | `Language` | `"auto"`, `"es"`, `"en"` | Interface language (default: the Windows language; Spanish, otherwise English) |
 | `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Flyout background (`"dark"` = solid, follows light/dark mode) |
+| `DeskWidget` | `{ "SystemPanel": { "X": 100, "Y": 80 } }` | Flyouts pinned to the desktop as widgets and their position in physical screen pixels (`SystemPanel`, `NetworkPanel`, `UsagePanel`, `MediaPanel`, `RadioPanel`); managed with each flyout's pin |
 | `SecondaryRightMargin` | number (logical px) | Space reserved for the clock on secondary taskbars until its real size is known (it is measured on each screen) |
 | `MonitorIds` | (informational) | Code → name of the detected monitors |
 

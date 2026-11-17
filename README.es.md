@@ -143,6 +143,8 @@ La configuración (`%APPDATA%\TaskbarPanels`) se conserva al desinstalar.
 Además: los botones multimedia funcionan sin quitar el foco a la ventana activa, los paneles de red,
 IA y sistema se pueden **arrastrar** en horizontal, cada uno por separado, sin solaparse nunca y sin salir de la barra (uno soltado a la izquierda del botón Inicio queda a esa misma distancia del borde izquierdo en todas las pantallas, sea cual sea su ancho), y al **dejar el cursor** sobre un panel aparece su ventana de detalle.
 
+**Widgets de escritorio**: el **pin** de la esquina superior derecha de cada ventana de detalle la fija al escritorio como widget, por debajo de todas las ventanas (se ve cuando el escritorio queda a la vista o con Win+D). Se mueve arrastrándola desde cualquier punto y otro clic en el pin la suelta. Tapado por otras ventanas, un widget no consume nada medible; a la vista, los cinco juntos añaden unos 17 MB y alrededor de un 1 % de un núcleo.
+
 ## Configuración
 
 Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 5 s):
@@ -163,6 +165,7 @@ Se guarda en `%APPDATA%\TaskbarPanels\config.json` y se aplica en caliente (≤ 
 | `MediaWidth` | `400`, `480`, `560` (predeterminado), `680`, `800` o cualquier valor de 320 a 1200 | Ancho del panel multimedia en píxeles lógicos (menú *Tamaño del panel multimedia*); se reduce solo si no hay espacio suficiente (sin espectro por debajo de 300 px, solo carátula y botones hasta 160 px) |
 | `Language` | `"auto"`, `"es"`, `"en"` | Idioma de la interfaz (por defecto, el de Windows: español o, si no, inglés) |
 | `PopupStyle` | `"glass"`, `"clear"`, `"acrylic"`, `"mica"`, `"dark"` | Fondo de las ventanas flotantes (`"dark"` = opaco, sigue el modo claro/oscuro) |
+| `DeskWidget` | `{ "SystemPanel": { "X": 100, "Y": 80 } }` | Ventanas fijadas al escritorio como widget y su posición en píxeles físicos de pantalla (`SystemPanel`, `NetworkPanel`, `UsagePanel`, `MediaPanel`, `RadioPanel`); se gestiona con el pin de cada ventana |
 | `SecondaryRightMargin` | número (px lógicos) | Espacio reservado al reloj en barras secundarias mientras no se conoce su tamaño real (se mide en cada pantalla) |
 | `MonitorIds` | (informativo) | Código → nombre de los monitores detectados |
 

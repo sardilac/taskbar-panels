@@ -645,6 +645,11 @@ struct App {
     /// rectángulo (pantalla) del panel sobre el que se abrió la ventana flotante
     popup_anchor: RECT,
     popup_light: Option<bool>,
+    /// widget de escritorio (prototipo): ventana, marcadora de orden Z, lienzo y escala
+    widgets: Vec<Widget>,
+    /// el escritorio está mostrado (Win+D): los widgets van «siempre encima»
+    /// arrastre en curso: (cursor dentro de la ventana x, y, se movió)
+    widget_drag: Option<(i32, i32, bool)>,
 }
 
 impl App {
@@ -1479,7 +1484,9 @@ fn popup_frame(c: &mut Surface, w: f32, sc: f32, title: &str, right: &str) -> f3
     c.frosted(sc, &style);
     let pad = 12.0 * sc;
     c.text(title, pad + 2.0 * sc, pad, w - pad * 2.0, 20.0 * sc, 13.0 * sc, 600, "Segoe UI", WHITE, DT_LEFT);
-    c.text(right, pad, pad, w - pad * 2.0 - 2.0 * sc, 20.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
+    // a la derecha, el pin (fijar la ventana al escritorio) y, a su izquierda, el texto secundario
+    c.text(right, pad, pad, w - pad * 2.0 - 26.0 * sc, 20.0 * sc, 9.5 * sc, 400, "Segoe UI", DIM, DT_RIGHT | DT_END_ELLIPSIS);
+    draw_pin(c, w, sc);
     pad + 28.0 * sc
 }
 
@@ -3042,6 +3049,8 @@ unsafe fn paint_popup_window(hwnd: HWND) {
             full = true;
         }
         render::set_light(app.light_of(app.popup_tb));
+        let pinned = app.popup_kind.is_some_and(|k| widget_pos(&app.cfg, k).is_some());
+        PIN.with(|p| p.set((pinned, PIN_HOVER.with(|h| h.get()))));
         let sc = app.popup_scale;
         let tt = app.t0.elapsed().as_secs_f32();
         let style = spectrum_style(&app.cfg);
@@ -3210,8 +3219,8 @@ unsafe fn update_popup() {
             app.popup_hidden_at = None;
             schedule_trim(5);
         }
-        net::set_active(app.popup_shown && app.popup_kind == Some(Kind::Ip));
-        sys::set_procs_active(app.popup_shown && app.popup_kind == Some(Kind::System));
+        net::set_active((app.popup_shown && app.popup_kind == Some(Kind::Ip)) || widget_seen(app, Kind::Ip));
+        sys::set_procs_active((app.popup_shown && app.popup_kind == Some(Kind::System)) || widget_seen(app, Kind::System));
         // multimedia: animación a 60 fps (espectro, progreso); red: ~15 fps (LED y ondas del router);
         // sistema: ~20 fps, pero solo las tarjetas animadas (ventiladores y energía), no toda la ventana
         let frame = (app.t0.elapsed().as_millis() / 16) as u64;
@@ -4886,10 +4895,12 @@ unsafe fn on_main_timer(main: HWND) {
         }
         app.net_prev = Some((rx, tx, now));
         util::timed("1s.sync", || sync(app));
+        sync_widgets(app);
         st().ip_changed.take()
     })
     .flatten();
     util::timed("1s.paneles", || render_kind(false));
+    with_app(|a| invalidate_widgets(a, true, 0));
     if let Some((true, h)) = with_app(|a| (a.popup_shown, a.popup)) {
         let _ = InvalidateRect(h, None, FALSE);
     }
@@ -4918,6 +4929,7 @@ thread_local! {
 unsafe extern "system" fn on_foreground(_h: windows::Win32::UI::Accessibility::HWINEVENTHOOK, _e: u32, _w: HWND, _o: i32, _c: i32, _t: u32, _ms: u32) {
     RAISE_UNTIL.with(|r| r.set(Some(Instant::now() + std::time::Duration::from_millis(600))));
     raise_panels();
+    with_app(|app| widget_zorder(app));
 }
 
 /// Vuelve a poner los paneles visibles por encima de todo (sin moverlos ni activarlos)
@@ -4950,6 +4962,351 @@ unsafe fn on_fast_timer() {
         util::timed("radio", || render_radio());
     }
     util::timed("hover", || update_popup());
+    // widget de escritorio: ¿se mostró u ocultó el escritorio? (~10 veces por segundo)
+    if tick % 6 == 0 {
+        with_app(|app| widget_zorder(app));
+    }
+    with_app(|a| invalidate_widgets(a, false, tick));
+}
+
+// ======================================================================= widgets de escritorio
+// Cualquier ventana flotante se puede fijar al escritorio con el pin de su esquina superior derecha:
+// pasa a ser una ventana propia al fondo del orden Z (debajo de todas las apps), que se arrastra con
+// el ratón y recuerda su posición (`DeskWidget` en config.json, px físicos de pantalla, por panel).
+// Al «Mostrar escritorio» (Win+D) Windows sube el escritorio por encima de las ventanas normales: se
+// detecta porque quedan ventanas de apps por debajo de él en el orden Z, y mientras dure los widgets
+// se ponen «siempre encima».
+
+struct Widget {
+    kind: Kind,
+    hwnd: HWND,
+    surf: Option<Surface>,
+    scale: f32,
+    /// algo del widget está a la vista (si no, no se pinta)
+    seen: bool,
+    /// (estilo de fondo, modo claro) aplicados
+    look: Option<(String, bool)>,
+    /// niveles suavizados del espectro (multimedia)
+    disp: Vec<f32>,
+    /// desde cuándo está tapado del todo (pasado un rato se libera su lienzo)
+    hidden_at: Option<Instant>,
+}
+
+thread_local! {
+    /// pin de la cabecera de la ventana que se está pintando: (fijada, cursor encima)
+    static PIN: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// el cursor está sobre el pin de la ventana flotante
+    static PIN_HOVER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Zona del pin (x, y, lado) en la cabecera de una ventana de ancho `w`
+fn pin_rect(w: f32, sc: f32) -> (f32, f32, f32) {
+    (w - 32.0 * sc, 10.0 * sc, 22.0 * sc)
+}
+
+fn in_pin(w: f32, sc: f32, x: f32, y: f32) -> bool {
+    let (px, py, ps) = pin_rect(w, sc);
+    x >= px && x < px + ps && y >= py && y < py + ps
+}
+
+/// Dibuja el pin: contorno atenuado si la ventana no está fijada, relleno si lo está
+fn draw_pin(c: &mut Surface, w: f32, sc: f32) {
+    let (pinned, hover) = PIN.with(|p| p.get());
+    let (px, py, ps) = pin_rect(w, sc);
+    if hover {
+        c.raw(|c| c.round_rect(px, py, ps, ps, 5.0 * sc, WHITE, 0.14));
+    }
+    // Segoe Fluent Icons: E718 = Pin, E840 = Pinned
+    let (glyph, col) = if pinned { ("\u{E840}", WHITE) } else { ("\u{E718}", if hover { WHITE } else { DIM }) };
+    c.text(glyph, px, py, ps, ps, 12.0 * sc, 400, "Segoe Fluent Icons", col, DT_CENTER);
+}
+
+/// Posición guardada del widget de un panel; None = no está fijado
+fn widget_pos(cfg: &Config, k: Kind) -> Option<(i32, i32)> {
+    let w = &cfg.v["DeskWidget"][k.name()];
+    Some((w["X"].as_i64()? as i32, w["Y"].as_i64()? as i32))
+}
+
+/// Fija (con su posición) o suelta el widget de un panel y guarda la configuración
+unsafe fn set_widget(app: &mut App, k: Kind, pos: Option<(i32, i32)>) {
+    if !app.cfg.v["DeskWidget"].is_object() {
+        app.cfg.v["DeskWidget"] = serde_json::json!({});
+    }
+    match pos {
+        Some((x, y)) => app.cfg.v["DeskWidget"][k.name()] = serde_json::json!({ "X": x, "Y": y }),
+        None => {
+            if let Some(o) = app.cfg.v["DeskWidget"].as_object_mut() {
+                o.remove(k.name());
+            }
+        }
+    }
+    let mons = monitors_for_config(&app.bars, &app.cfg);
+    app.cfg.save(&mons);
+    sync_widgets(app);
+}
+
+/// (área de trabajo, escala) del monitor más cercano a un punto de la pantalla
+unsafe fn monitor_at(x: i32, y: i32) -> (RECT, f32) {
+    let m = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+    let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    let _ = GetMonitorInfoW(m, &mut mi);
+    let (mut dx, mut dy) = (96u32, 96u32);
+    let _ = GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+    (mi.rcWork, dx as f32 / 96.0)
+}
+
+/// Ventana de nivel superior que contiene los iconos del escritorio (Progman o un WorkerW)
+unsafe fn desktop_host() -> HWND {
+    let has_view = |h: HWND| !FindWindowExW(h, HWND::default(), w!("SHELLDLL_DefView"), PCWSTR::null()).unwrap_or_default().is_invalid();
+    let shell = GetShellWindow();
+    if !shell.is_invalid() && has_view(shell) {
+        return shell;
+    }
+    let mut w = HWND::default();
+    loop {
+        w = FindWindowExW(HWND::default(), w, w!("WorkerW"), PCWSTR::null()).unwrap_or_default();
+        if w.is_invalid() || has_view(w) {
+            return w;
+        }
+    }
+}
+
+/// Crea, recoloca o destruye los widgets según la configuración (una vez por segundo y tras cada cambio)
+unsafe fn sync_widgets(app: &mut App) {
+    if app.widget_drag.is_some() {
+        return;
+    }
+    let ex = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    let bg = (popup_style(&app.cfg), render::system_light());
+    let mut freed = false;
+    for kind in KINDS {
+        let idx = app.widgets.iter().position(|w| w.kind == kind);
+        let Some((x, y)) = widget_pos(&app.cfg, kind) else {
+            if let Some(i) = idx {
+                let w = app.widgets.remove(i);
+                let _ = DestroyWindow(w.hwnd);
+                dbg(&format!("widget {kind:?}: cerrado"));
+            }
+            continue;
+        };
+        let i = match idx {
+            Some(i) => i,
+            None => {
+                use windows::Win32::Graphics::Dwm::*;
+                let hinst: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
+                let Ok(h) = CreateWindowExW(ex, POPUP_CLASS, w!("tp-desk-widget"), WS_POPUP, 0, 0, 10, 10, HWND::default(), HMENU::default(), hinst, None) else { continue };
+                let round: i32 = 2; // DWMWCP_ROUND
+                let _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as *const _, 4);
+                let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
+                let _ = DwmExtendFrameIntoClientArea(h, &m);
+                let _ = SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, flags);
+                if kind == Kind::Radio {
+                    let country = radio::radio().country.clone();
+                    radio::ensure_list(&country);
+                }
+                dbg(&format!("widget {kind:?}: creado en ({x},{y})"));
+                app.widgets.push(Widget { kind, hwnd: h, surf: None, scale: 1.0, seen: false, look: None, disp: Vec::new(), hidden_at: None });
+                app.widgets.len() - 1
+            }
+        };
+        let w = &mut app.widgets[i];
+        // fondo según el estilo elegido y el modo claro/oscuro de Windows
+        if w.look.as_ref() != Some(&bg) {
+            render::set_light(bg.1);
+            apply_popup_style(w.hwnd, &bg.0);
+            w.look = Some(bg.clone());
+            let _ = InvalidateRect(w.hwnd, None, FALSE);
+        }
+        // tamaño según la escala de su pantalla (el alto cambia con el contenido); siempre dentro de ella
+        let (work, sc) = monitor_at(x, y);
+        w.scale = sc;
+        let (pw, ph) = ((popup_w(kind) * sc) as i32, (popup_h(kind) * sc) as i32);
+        let x = x.clamp(work.left, (work.right - pw).max(work.left));
+        let y = y.clamp(work.top, (work.bottom - ph).max(work.top));
+        let mut r = RECT::default();
+        let _ = GetWindowRect(w.hwnd, &mut r);
+        if (r.left, r.top, r.right - r.left, r.bottom - r.top) != (x, y, pw, ph) || !IsWindowVisible(w.hwnd).as_bool() {
+            let _ = SetWindowPos(w.hwnd, HWND::default(), x, y, pw, ph, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let _ = InvalidateRect(w.hwnd, None, FALSE);
+        }
+        // ¿se ve algo del widget? (tapado por las ventanas no se pinta ni se recogen sus datos)
+        let seen = {
+            let (w4, h4) = (pw / 4, ph / 4);
+            [(pw / 2, ph / 2), (w4, h4), (pw - w4, h4), (w4, ph - h4), (pw - w4, ph - h4)]
+                .iter()
+                .any(|&(dx, dy)| GetAncestor(WindowFromPoint(POINT { x: x + dx, y: y + dy }), GA_ROOT) == w.hwnd)
+        };
+        if seen != w.seen {
+            dbg(&format!("widget {kind:?}: visible = {seen}"));
+            if seen {
+                let _ = InvalidateRect(w.hwnd, None, FALSE); // vuelve a verse: datos al día ya
+            }
+        }
+        w.seen = seen;
+        if seen {
+            w.hidden_at = None;
+        } else if w.hidden_at.get_or_insert_with(Instant::now).elapsed().as_secs() >= 15 && w.surf.is_some() {
+            // tapado hace rato: se libera su lienzo y el fondo precalculado (varios MB por widget)
+            w.surf = None;
+            w.disp = Vec::new();
+            freed = true;
+        }
+    }
+    if freed {
+        schedule_trim(5);
+    }
+}
+
+/// El widget de un panel está fijado y a la vista
+fn widget_seen(app: &App, k: Kind) -> bool {
+    app.widgets.iter().any(|w| w.kind == k && w.seen)
+}
+
+/// Orden Z de los widgets: siempre pegados justo encima de la ventana del escritorio. En uso normal
+/// esa ventana es la última, así que quedan bajo todas las apps; al «mostrar el escritorio» Windows
+/// la sube (y oculta las apps) y los widgets suben con ella; al restaurar, vuelven al fondo.
+unsafe fn widget_zorder(app: &mut App) {
+    if app.widgets.is_empty() || app.widget_drag.is_some() {
+        return;
+    }
+    let host = desktop_host();
+    if host.is_invalid() {
+        return;
+    }
+    let is_widget = |h: HWND| app.widgets.iter().any(|w| w.hwnd == h);
+    // ¿cuántos widgets hay ya seguidos encima del escritorio? (las ventanas ocultas no cuentan)
+    let (mut ok, mut h) = (0, GetWindow(host, GW_HWNDPREV).unwrap_or_default());
+    for _ in 0..500 {
+        if h.is_invalid() {
+            break;
+        }
+        if is_widget(h) {
+            ok += 1;
+        } else if IsWindowVisible(h).as_bool() {
+            break;
+        }
+        h = GetWindow(h, GW_HWNDPREV).unwrap_or_default();
+    }
+    if ok == app.widgets.len() {
+        return;
+    }
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    for w in app.widgets.iter() {
+        let above = GetWindow(host, GW_HWNDPREV).unwrap_or_default();
+        if above != w.hwnd {
+            let _ = SetWindowPos(w.hwnd, if above.is_invalid() { HWND_TOP } else { above }, 0, 0, 0, 0, flags);
+        }
+    }
+    dbg("widgets: recolocados justo encima del escritorio");
+    sync_widgets(app); // lo que se ve cambia ya, sin esperar al siguiente segundo
+}
+
+/// Repinta los widgets a la vista, cada uno al ritmo de sus datos: sistema, red y multimedia una vez
+/// por segundo; IA y la radio parada cada pocos segundos (`second` = tic de 1 s). Entre medias solo
+/// se animan, a ritmo reducido, el multimedia en reproducción y la radio al aire o conectando.
+unsafe fn invalidate_widgets(app: &App, second: bool, tick: u32) {
+    if !app.widgets.iter().any(|w| w.seen) {
+        return;
+    }
+    let secs = app.t0.elapsed().as_secs();
+    let radio_live = widget_seen(app, Kind::Radio) && matches!(radio::now().status, radio::Status::Playing | radio::Status::Connecting);
+    for w in app.widgets.iter().filter(|w| w.seen) {
+        let (period, anim) = match w.kind {
+            Kind::System | Kind::Ip => (1, false),
+            Kind::Media => (1, tick % 6 == 0 && st().playing),
+            Kind::Usage => (5, false),
+            Kind::Radio => (if radio_live { 1 } else { 3 }, radio_live && tick % 12 == 0),
+        };
+        if (second && secs % period == 0) || (!second && anim) {
+            let _ = InvalidateRect(w.hwnd, None, FALSE);
+        }
+    }
+}
+
+unsafe fn paint_widget_window(hwnd: HWND) {
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(hwnd, &mut ps);
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let s = st().clone();
+    with_app(|app| {
+        render::set_light(render::system_light());
+        POPUP_STYLE.with(|st| *st.borrow_mut() = popup_style(&app.cfg));
+        PIN.with(|p| p.set((true, false)));
+        let tt = app.t0.elapsed().as_secs_f32();
+        let style = spectrum_style(&app.cfg);
+        let Some(w) = app.widgets.iter_mut().find(|w| w.hwnd == hwnd) else { return };
+        if w.surf.as_ref().map(|x| x.w != rc.right || x.h != rc.bottom).unwrap_or(true) {
+            w.surf = Surface::new(rc.right, rc.bottom);
+        }
+        let (sc, wf, hf) = (w.scale, rc.right as f32, rc.bottom as f32);
+        if let Some(surf) = w.surf.as_mut() {
+            // siempre completo: sin las zonas animadas de la ventana flotante
+            match w.kind {
+                Kind::System => paint_popup_system(surf, wf, hf, sc, &s, tt, false),
+                Kind::Ip => paint_popup_ip(surf, wf, hf, sc, &s, tt, false),
+                Kind::Usage => paint_popup_ai(surf, wf, hf, sc, &AiView::from_cfg(&app.cfg)),
+                Kind::Media => paint_popup_media(surf, wf, hf, sc, &s, &mut w.disp, tt, style),
+                Kind::Radio => paint_popup_radio(surf, wf, hf, sc, tt),
+            }
+            surf.blit(hdc);
+        }
+    });
+    let _ = EndPaint(hwnd, &ps);
+}
+
+/// Ratón sobre un widget: arrastrar (desde cualquier punto) lo mueve y guarda la posición al soltar;
+/// un clic sin mover actúa sobre el pin (lo suelta) o sobre los botones de la ventana
+unsafe fn widget_mouse(hwnd: HWND, msg: u32) {
+    let mut pt = POINT::default();
+    let _ = GetCursorPos(&mut pt);
+    let mut r = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut r);
+    match msg {
+        WM_LBUTTONDOWN => {
+            with_app(|a| a.widget_drag = Some((pt.x - r.left, pt.y - r.top, false)));
+            SetCapture(hwnd);
+        }
+        WM_MOUSEMOVE => {
+            let Some(Some((dx, dy, moved))) = with_app(|a| a.widget_drag) else { return };
+            let (nx, ny) = (pt.x - dx, pt.y - dy);
+            if !moved && (nx - r.left).abs() < 4 && (ny - r.top).abs() < 4 {
+                return; // umbral: un clic sin mover no recoloca nada
+            }
+            let _ = SetWindowPos(hwnd, HWND::default(), nx, ny, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            with_app(|a| a.widget_drag = Some((dx, dy, true)));
+        }
+        _ => {
+            let _ = ReleaseCapture();
+            let Some(Some((_, _, moved))) = with_app(|a| a.widget_drag.take()) else { return };
+            let Some(Some((kind, sc))) = with_app(|a| a.widgets.iter().find(|w| w.hwnd == hwnd).map(|w| (w.kind, w.scale))) else { return };
+            if moved {
+                with_app(|app| set_widget(app, kind, Some((r.left, r.top)))); // otra pantalla → otra escala
+                return;
+            }
+            let (x, y) = ((pt.x - r.left) as f32, (pt.y - r.top) as f32);
+            if in_pin((r.right - r.left) as f32, sc, x, y) {
+                with_app(|app| set_widget(app, kind, None));
+                return;
+            }
+            match kind {
+                Kind::Radio => {
+                    let hit = popup_hit(x, y, true);
+                    if hit != ACT_RADIO_SEARCH {
+                        radio_click(hit); // el buscador necesita el teclado: solo en la ventana flotante
+                    }
+                }
+                Kind::Ip => {
+                    if popup_hit(x, y, false) == ACT_SPEEDTEST {
+                        speedtest::start(speedtest::selected());
+                    }
+                }
+                _ => {}
+            }
+            let _ = InvalidateRect(hwnd, None, FALSE);
+        }
+    }
 }
 
 // ======================================================================= ratón en paneles
@@ -5057,6 +5414,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_PAINT => {
             if with_app(|a| a.popup == hwnd).unwrap_or(false) {
                 util::timed("popup", || paint_popup_window(hwnd));
+            } else if with_app(|a| a.widgets.iter().any(|w| w.hwnd == hwnd)).unwrap_or(false) {
+                let name = match with_app(|a| a.widgets.iter().find(|w| w.hwnd == hwnd).map(|w| w.kind)).flatten() {
+                    Some(Kind::System) => "w.sistema",
+                    Some(Kind::Ip) => "w.red",
+                    Some(Kind::Usage) => "w.ia",
+                    Some(Kind::Media) => "w.multimedia",
+                    _ => "w.radio",
+                };
+                util::timed(name, || paint_widget_window(hwnd));
             } else {
                 let _ = ValidateRect(hwnd, None);
             }
@@ -5081,17 +5447,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_RBUTTONUP => {
-            if panel_kind(hwnd).is_some() {
+            if panel_kind(hwnd).is_some() || with_app(|a| a.widgets.iter().any(|w| w.hwnd == hwnd)).unwrap_or(false) {
                 let main = with_app(|a| a.main).unwrap_or_default();
                 show_menu(main);
                 return LRESULT(0);
             }
+        }
+        WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP if with_app(|a| a.widgets.iter().any(|w| w.hwnd == hwnd)).unwrap_or(false) => {
+            widget_mouse(hwnd, msg);
+            return LRESULT(0);
         }
         WM_MOUSEMOVE | WM_LBUTTONUP if with_app(|a| a.popup == hwnd).unwrap_or(false) => {
             // ventana flotante: botones (p. ej. iniciar speed test)
             let (x, y) = ((lp.0 & 0xFFFF) as i16 as f32, ((lp.0 >> 16) & 0xFFFF) as i16 as f32);
             // cada zona pertenece a una ventana: las de otra (que siguen en la lista) no cuentan
             let kind = with_app(|a| a.popup_kind).flatten();
+            // pin de la cabecera: fija la ventana al escritorio donde está (o la suelta si ya lo estaba)
+            let mut wr = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut wr);
+            let on_pin = in_pin((wr.right - wr.left) as f32, with_app(|a| a.popup_scale).unwrap_or(1.0), x, y);
+            if PIN_HOVER.with(|h| h.replace(on_pin)) != on_pin {
+                let _ = InvalidateRect(hwnd, None, FALSE);
+            }
+            if let (true, WM_LBUTTONUP, Some(k)) = (on_pin, msg, kind) {
+                with_app(|app| {
+                    let pos = if widget_pos(&app.cfg, k).is_some() { None } else { Some((wr.left, wr.top)) };
+                    set_widget(app, k, pos);
+                });
+                let _ = InvalidateRect(hwnd, None, FALSE);
+                return LRESULT(0);
+            }
             let hit = match kind {
                 Some(Kind::Radio) => popup_hit(x, y, true),
                 Some(Kind::Ip) => popup_hit(x, y, false),
@@ -5134,7 +5519,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             RADIO_FOCUS.with(|f| f.set(false));
             return LRESULT(0);
         }
-        WM_MOUSEWHEEL if with_app(|a| a.popup == hwnd && a.popup_kind == Some(Kind::Radio)).unwrap_or(false) => {
+        WM_MOUSEWHEEL if with_app(|a| (a.popup == hwnd && a.popup_kind == Some(Kind::Radio)) || a.widgets.iter().any(|w| w.hwnd == hwnd && w.kind == Kind::Radio)).unwrap_or(false) => {
             // lista de emisoras: dos filas por paso de rueda
             let delta = ((wp.0 >> 16) & 0xFFFF) as i16;
             radio_scroll(if delta > 0 { -2 } else { 2 });
@@ -5620,6 +6005,8 @@ fn main() {
                 search_changed: None,
                 popup_anchor: RECT::default(),
                 popup_light: None,
+                widgets: Vec::new(),
+                widget_drag: None,
             })
         });
 

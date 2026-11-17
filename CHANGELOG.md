@@ -2,6 +2,12 @@
 
 **English** · [Español](CHANGELOG.es.md)
 
+## v1.6.0
+
+- **Desktop widgets**: every detail flyout now has a **pin** in its top-right corner. Clicking it pins the flyout to the desktop as a widget, right where it was: below every window, visible whenever the desktop is in view (or with *Show desktop*, Win+D). **Drag** it from anywhere to move it, on any screen, and the position is saved; another click on the pin releases it. Any of the five can be pinned (system, network, AI, media and radio) and they stay functional: the radio switches stations and the network one starts the speed test. Positions are stored in `DeskWidget`.
+- **Widget cost**: a widget covered by other windows is neither painted nor fed with data, and after 15 s it frees its canvas, so it costs nothing measurable. In view, each one repaints at the pace of its data (AI every 5 s, idle radio every 3 s) with reduced animation. Measured with all five pinned and music playing (24 logical cores, display at 150 %): about 17 MB more memory (54 MB private in total versus 37 MB) and around 1 percentage point of one core; covered, the same as with no widgets.
+- **Faster drawing**: the interior of rounded rectangles (cards and backgrounds) is filled in spans with integer arithmetic instead of pixel by pixel. Painting the system flyout drops from about 24 ms to 5 ms and the radio one from 13 ms to 3 ms, in the regular flyouts too.
+
 ## v1.5.4
 
 - **Tighter icon mode**: panels in icon mode are narrower (34 logical px instead of 44) and two adjacent icons sit 4 px apart instead of 14, close to the spacing of the tray icons. The drawing keeps its size; if they still do not fit, they narrow down to 28 px before being hidden.

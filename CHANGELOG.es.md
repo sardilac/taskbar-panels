@@ -2,6 +2,12 @@
 
 [English](CHANGELOG.md) · **Español**
 
+## v1.6.0
+
+- **Widgets de escritorio**: cada ventana de detalle tiene ahora un **pin** en la esquina superior derecha. Al pulsarlo, la ventana queda fijada al escritorio como widget, en el punto donde estaba: por debajo de todas las ventanas, visible cuando el escritorio queda a la vista (o con *Mostrar escritorio*, Win+D). Se mueve **arrastrándola** desde cualquier punto, en cualquier pantalla, y la posición se guarda; otro clic en el pin la suelta. Se puede fijar cualquiera de las cinco (sistema, red, IA, multimedia y radio) y siguen siendo funcionales: la radio cambia de emisora y la de red lanza el speed test. Las posiciones se guardan en `DeskWidget`.
+- **Consumo de los widgets**: un widget tapado por otras ventanas no se pinta ni recoge datos, y a los 15 s libera su lienzo, así que no cuesta nada medible. A la vista, cada uno se repinta al ritmo de sus datos (IA cada 5 s, radio parada cada 3 s) y con la animación reducida. Medido con los cinco fijados y música sonando (equipo de 24 núcleos lógicos, pantalla al 150 %): unos 17 MB más de memoria (54 MB privados en total frente a 37 MB) y alrededor de 1 punto porcentual de un núcleo; tapados, igual que sin widgets.
+- **Dibujo más rápido**: el interior de los rectángulos redondeados (tarjetas y fondos) se rellena por tramos con aritmética entera en lugar de píxel a píxel. Pintar la ventana de sistema baja de unos 24 ms a 5 ms y la de radio de 13 ms a 3 ms, también en las ventanas flotantes normales.
+
 ## v1.5.4
 
 - **Modo icono más justo**: los paneles en modo icono son más estrechos (34 px lógicos en vez de 44) y dos iconos contiguos quedan a 4 px en vez de 14, con una separación parecida a la de los iconos de la bandeja. El dibujo conserva su tamaño; si aun así no caben, se estrechan hasta 28 px antes de ocultarse.
